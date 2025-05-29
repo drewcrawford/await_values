@@ -1,0 +1,9 @@
+[package]
+name = "await_values"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+atomic-waker = "~1"
+[dev-dependencies]
+test_executors = "~0.3"
