@@ -3,6 +3,7 @@ use std::sync::atomic::AtomicBool;
 use atomic_waker::AtomicWaker;
 use crate::ObserverError;
 
+#[derive(Clone)]
 pub struct ActiveObservation {
     shared: Arc<Shared>,
 }
@@ -47,6 +48,6 @@ pub fn observation() -> (ActiveObservation, ActiveObservationFuture) {
     (
         ActiveObservation { shared: shared.clone() },
         ActiveObservationFuture { shared }
-        
+
     )
 }

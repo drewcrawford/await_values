@@ -6,7 +6,7 @@ mod active_observation;
 mod aggregate;
 
 use std::sync::{Arc, Mutex, MutexGuard};
-use crate::active_observation::ActiveObservation;
+use crate::active_observation::{ActiveObservation, ActiveObservationFuture};
 
 struct Shared<T> {
     value: Option<T>,// None on hangup
@@ -156,13 +156,30 @@ impl<T> Observer<T> {
         }
     }
 
-    fn push_observation(&self, observation: ActiveObservation, mut lock: MutexGuard<Shared<T>>) {
-        lock.active_observations.push(observation);
-        drop(lock); // Explicitly drop the lock after pushing the observation
-    }
 
-    pub(crate) fn aggregate_poll_impl(&mut self) {
-        todo!()
+    /**
+    Returns either the underling value if available, along with the unused ActiveObservationFuture.
+    Or else installs the observer and returns a vacuous Err.
+*/
+    pub(crate) fn aggregate_poll_impl(&mut self, observer: ActiveObservation) -> Result<(ActiveObservation,Result<T,ObserverError>),()> where T: PartialEq + Clone {
+        match self.next_when_immediately_available() {
+            Ok(answer) => {
+                Ok((observer,answer))
+            }
+            Err(mut lock) => {
+                lock.active_observations.push(observer);
+                Err(())
+            }
+        }
+    }
+    
+    ///Determines if the observer has a value available without blocking.
+    pub(crate) fn observe_if_distinct(&mut self) -> bool  where T: PartialEq + Clone {
+        let r = self.next_when_immediately_available();
+        match r {
+            Ok(..) => true, // Value is available and distinct
+            Err(_) => false, // No value available
+        }
     }
 
 
