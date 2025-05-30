@@ -3,8 +3,9 @@ Primitives for subscribing to updates to value changes.
 */
 
 mod active_observation;
+mod aggregate;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use crate::active_observation::ActiveObservation;
 
 struct Shared<T> {
@@ -92,12 +93,46 @@ impl<T> Observer<T> {
         }
     }
 
+
     /**
     Returns the next value observed.
     * If no values have been observed yet, it will return the current value.
     * Subsequent calls will yield until the value changes, at which point it will return the new value.
     */
     pub async fn next(&mut self) -> Result<T,ObserverError> where T: Clone + PartialEq {
+        let mut r = self.next_when_immediately_available();
+        let future = match r {
+            Ok(Ok(value)) => {
+                return Ok(value)
+            },
+            Ok(Err(ObserverError::Hungup)) => {
+                return Err(ObserverError::Hungup)
+            },
+            Err(ref mut lock) => {
+                // We need to wait for a change
+                let (observation, future) = active_observation::observation();
+                lock.active_observations.push(observation);
+                future
+            }
+        };
+        drop(r);
+        let r = future.await;
+        if let Err(e) = r {
+            Err(e)
+        }
+        else {
+            self.current_value()
+        }
+
+    }
+
+    /**
+    Returns the next value observed, but only if it is immediately available.
+    For this purpose, the next value is considered immediately available if the value hang up.
+    * If no values have been observed yet, it will return the current value.
+    * If the value has not changed since the last observation, it will return an error.
+*/
+    fn next_when_immediately_available(&mut self) -> Result<Result<T,ObserverError>,MutexGuard<Shared<T>>> where T: PartialEq + Clone {
         if let Some(last_observed) = &self.observed {
             let mut lock = self.shared.lock().unwrap();
             //take a new observation
@@ -106,26 +141,30 @@ impl<T> Observer<T> {
                 if let Some(new_value) = new_value {
                     // If the value has changed, update the observed value
                     self.observed = Some(new_value.clone());
-                    Ok(new_value)
+                    Ok(Ok(new_value))
                 } else {
                     // If the value is None, it means the value has been dropped
-                    Err(ObserverError::Hungup)
+                    Ok(Err(ObserverError::Hungup))
                 }
             }
             else {
-                //value the same as last time.  In this case we need to wait for a change
-                let (observation, future) = active_observation::observation();
-                lock.active_observations.push(observation);
-                drop(lock); // Explicitly drop the lock before awaiting
-                future.await?;
-                // After the future resolves, we can check the value again
-                self.current_value()
+                Err(lock) // hold the lock for the caller to use
             }
         }
         else {
-            self.current_value()
+            Ok(self.current_value())
         }
     }
+
+    fn push_observation(&self, observation: ActiveObservation, mut lock: MutexGuard<Shared<T>>) {
+        lock.active_observations.push(observation);
+        drop(lock); // Explicitly drop the lock after pushing the observation
+    }
+
+    pub(crate) fn aggregate_poll_impl(&mut self) {
+        todo!()
+    }
+
 
 
 }
@@ -186,5 +225,9 @@ impl<T> Observer<T> {
         // Wait for the next value, which should return an error since the value is dropped
         let result = observer.next().await;
         assert!(result.is_err());
+
+        //should work again back to back
+        let result2 = observer.next().await;
+        assert!(result2.is_err(), "Expected error after value drop, got: {:?}", result2);
     }
 }
