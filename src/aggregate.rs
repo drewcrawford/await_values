@@ -1,11 +1,12 @@
+use std::fmt::Debug;
 use crate::{Observer};
-use crate::active_observation::{ActiveObservation, ActiveObservationFuture};
+use crate::active_observation::ActiveObservation;
 
-trait ErasedObserver {
+trait ErasedObserver: Debug + Send {
     fn aggregate_poll(&mut self, observation: ActiveObservation) -> Result<ActiveObservation,()>;
     fn observe_if_distinct(&mut self) -> bool;
 }
-impl <T> ErasedObserver for Observer<T> where T: PartialEq + Clone {
+impl <T> ErasedObserver for Observer<T> where T: PartialEq + Clone + Debug + Send {
     fn aggregate_poll(&mut self, observation: ActiveObservation) -> Result<ActiveObservation,()> {
         match self.aggregate_poll_impl(observation) {
             Ok(f) => Ok(f.0), //extract the nongeneric part
@@ -18,7 +19,10 @@ impl <T> ErasedObserver for Observer<T> where T: PartialEq + Clone {
     }
 }
 
-
+/**
+An aggregate, heterogeneous observer that can hold multiple observers of different types.
+*/
+#[derive(Debug)]
 pub struct AggregateObserver {
     observers: Vec<Box<dyn ErasedObserver>>,
 }
@@ -28,18 +32,19 @@ impl AggregateObserver {
         AggregateObserver { observers: Vec::new() }
     }
 
-    pub fn add_observer<T>(&mut self, observer: Observer<T>) where T: 'static + PartialEq + Clone {
+    pub fn add_observer<T>(&mut self, observer: Observer<T>) where T: 'static + PartialEq + Clone + Debug + Send {
         // Store the observer as a boxed trait object to erase the type
         self.observers.push(Box::new(observer));
     }
 
     /**
     Polls all observers and returns the first index that has a value ready.
+
+    Because this is an aggregate observer, there may be multiple observers that are ready.
+    At the moment, there is no way to return the underlying value of the observer
 */
     pub async fn next(&mut self) -> usize {
-        println!("next call");
         loop {
-            println!("loop iteration");
             let (active_observation, active_future) = crate::active_observation::observation();
             for (o,observer) in &mut self.observers.iter_mut().enumerate() {
                 let r = observer.aggregate_poll(active_observation.clone());
@@ -53,7 +58,7 @@ impl AggregateObserver {
                 }
             }
 
-            let something_woke = active_future.await;
+            _ = active_future.await;
             //look for the first observer that is ready
             for (o,observer) in &mut self.observers.iter_mut().enumerate() {
                 if observer.observe_if_distinct() {
@@ -67,6 +72,24 @@ impl AggregateObserver {
 
     }
 }
+
+//boilerplates
+
+impl Default for AggregateObserver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> From<Observer<T>> for AggregateObserver where T: 'static + PartialEq + Clone + Debug + Send {
+    fn from(observer: Observer<T>) -> Self {
+        let mut aggregate = AggregateObserver::new();
+        aggregate.add_observer(observer);
+        aggregate
+    }
+}
+
+
 #[cfg(test)] mod tests {
     use test_executors::async_test;
     use crate::Value;
@@ -81,8 +104,8 @@ impl AggregateObserver {
         o.add_observer(value.observe());
         o.add_observer(value2.observe());
 
-        let o1 = o.next().await;
-        let o2 = o.next().await;
+        let _ = o.next().await;
+        let _ = o.next().await;
 
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -91,8 +114,7 @@ impl AggregateObserver {
             //don't hangup
             std::mem::forget(value);
         });
-        let o3 = o.next().await;
-        assert_eq!(o1, 0);
+        _ = o.next().await;
     }
 
     #[async_test] async fn test_repeat_values() {

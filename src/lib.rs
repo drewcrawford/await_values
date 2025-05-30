@@ -1,20 +1,39 @@
 /*!
-Primitives for subscribing to updates to value changes.
+Primitives for subscribing to / notifying about changes to values.
+
+This library primarily imagines your value type is:
+* `Clone` - so that it can be cloned for observers.
+* `PartialEq` - so that we can diff values and only notify observers when the value changes.
+
+Our cast of characters includes:
+* [Value] - Allocates storage for a value.
+* [Observer] - A handle to a value that can be used to observe when the value changes remotely.
+* [aggregate::AggregateObserver] - A handle to multiple heterogeneous values that can be used to observe when any of the values change.
+
+This library uses asynchronous functions and is executor-agnostic.  It does not depend on tokio.
 */
 
 mod active_observation;
-mod aggregate;
+pub mod aggregate;
 
+use std::fmt::Display;
 use std::sync::{Arc, Mutex, MutexGuard};
-use crate::active_observation::{ActiveObservation, ActiveObservationFuture};
+use crate::active_observation::ActiveObservation;
 
+#[derive(Debug)]
 struct Shared<T> {
     value: Option<T>,// None on hangup
     active_observations: Vec<ActiveObservation>,
 }
+
+/**
+Allocates storage for a value that can be observed.
+*/
+#[derive(Debug)]
 pub struct Value<T> {
     shared: Arc<Mutex<Shared<T>>>,
 }
+
 
 impl<T> Value<T> {
     /// Creates a new `Value` with the given initial value.
@@ -64,10 +83,19 @@ impl<T> Drop for Value<T> {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ObserverError {
+    /// Indicates that the value has been hung up, meaning the value is no longer available and no updates will be made.
     Hungup,
 }
 
+/**
+A handle to a value that can be used to observe when the value changes remotely.
+
+Observers have an internal 'state' that tracks the last observed value.
+This allows them to return the current value immediately, and then wait for the next value to change.
+*/
+#[derive(Debug)]
 pub struct Observer<T> {
     shared: Arc<Mutex<Shared<T>>>,
     //The value last observed.
@@ -134,7 +162,7 @@ impl<T> Observer<T> {
 */
     fn next_when_immediately_available(&mut self) -> Result<Result<T,ObserverError>,MutexGuard<Shared<T>>> where T: PartialEq + Clone {
         if let Some(last_observed) = &self.observed {
-            let mut lock = self.shared.lock().unwrap();
+            let lock = self.shared.lock().unwrap();
             //take a new observation
             if (lock.value.as_ref()) != Some(last_observed) {
                 let new_value = lock.value.clone();
@@ -186,6 +214,42 @@ impl<T> Observer<T> {
 
 }
 
+//boilerplates
+
+impl <T> Default for Value<T> where T: Default {
+    fn default() -> Self {
+        Self::new(T::default())
+    }
+
+}
+impl <T> Display for Value<T> where T: Display + Clone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Value({})", self.get())
+    }
+}
+
+impl<T> From<T> for Value<T> {
+    fn from(value: T) -> Self {
+        Self::new(value)
+    }
+}
+
+impl Display for ObserverError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ObserverError::Hungup => write!(f, "Observer hung up"),
+        }
+    }
+}
+impl std::error::Error for ObserverError {
+
+}
+
+impl<T> From<Value<T>> for Observer<T> {
+    fn from(value: Value<T>) -> Self {
+        value.observe()
+    }
+}
 
 #[cfg(test)] mod tests {
     use test_executors::async_test;
