@@ -29,7 +29,7 @@ struct Shared<T> {
 /**
 Allocates storage for a value that can be observed.
 */
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 pub struct Value<T> {
     shared: Arc<Mutex<Shared<T>>>,
 }
@@ -95,7 +95,7 @@ A handle to a value that can be used to observe when the value changes remotely.
 Observers have an internal 'state' that tracks the last observed value.
 This allows them to return the current value immediately, and then wait for the next value to change.
 */
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 pub struct Observer<T> {
     shared: Arc<Mutex<Shared<T>>>,
     //The value last observed.
