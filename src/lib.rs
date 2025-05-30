@@ -29,7 +29,14 @@ struct Shared<T> {
 /**
 Allocates storage for a value that can be observed.
 */
-#[derive(Debug,Clone)]
+
+/*
+Design note - the problem with making this Clone is that it also implements Drop, which would require
+reference counting to ensure that the value is not dropped while there are still observers.
+
+It's probably easiest to wrap this in Arc, which is why set is not &mut self.
+ */
+#[derive(Debug)]
 pub struct Value<T> {
     shared: Arc<Mutex<Shared<T>>>,
 }
@@ -49,7 +56,7 @@ impl<T> Value<T> {
     }
 
     /// Sets a new value and returns the old value.
-    pub fn set(&mut self, value: T) -> T {
+    pub fn set(&self, value: T) -> T {
         let mut lock = self.shared.lock().unwrap();
         let old = std::mem::replace(&mut lock.value, Some(value));
         let observers = std::mem::take(&mut lock.active_observations);
