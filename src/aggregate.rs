@@ -5,6 +5,8 @@ use crate::active_observation::ActiveObservation;
 trait ErasedObserver: Debug + Send {
     fn aggregate_poll(&mut self, observation: ActiveObservation) -> Result<ActiveObservation,()>;
     fn observe_if_distinct(&mut self) -> bool;
+    
+    fn is_dirty(&self) -> bool;
 }
 impl <T> ErasedObserver for Observer<T> where T: PartialEq + Clone + Debug + Send {
     fn aggregate_poll(&mut self, observation: ActiveObservation) -> Result<ActiveObservation,()> {
@@ -16,6 +18,10 @@ impl <T> ErasedObserver for Observer<T> where T: PartialEq + Clone + Debug + Sen
 
     fn observe_if_distinct(&mut self) -> bool {
         self.observe_if_distinct()
+    }
+    
+    fn is_dirty(&self) -> bool {
+        self.is_dirty()
     }
 }
 
@@ -68,8 +74,13 @@ impl AggregateObserver {
             //in "repeat" situations we may not have any observers that are ready
             //so try again!
         }
+    }
 
-
+    ///Determines if a new value can be read, without blocking or changing the internal state.
+    /// 
+    /// For this purpose, a hungup value is considered dirty.
+    pub fn is_dirty(&self) -> bool {
+        self.observers.iter().any(|e| e.is_dirty())
     }
 }
 

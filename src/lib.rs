@@ -216,6 +216,21 @@ impl<T> Observer<T> {
             Err(_) => false, // No value available
         }
     }
+    
+    ///Determines if a new value can be read, without blocking or changing the internal state.
+    /// 
+    /// For this purpose, a hungup value is considered dirty.
+    pub fn is_dirty(&self) -> bool where T: PartialEq {
+        let lock = self.shared.lock().unwrap();
+        match &lock.value {
+            Some(value) => {
+                // If the value is not equal to the last observed value, it's dirty
+                self.observed.as_ref().map_or(true, |obs| obs != value)
+            },
+            None => true, // If the value is None (hung up), it's considered dirty
+            
+        }
+    }
 
 
 
