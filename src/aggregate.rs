@@ -8,6 +8,7 @@ use crate::active_observation::ActiveObservation;
 use std::fmt::Debug;
 
 trait ErasedObserver: Debug + Send {
+    fn clone_box(&self) -> Box<dyn ErasedObserver>;
     fn aggregate_poll(&mut self, observation: ActiveObservation) -> Result<ActiveObservation, ()>;
     fn observe_if_distinct(&mut self) -> bool;
 
@@ -15,8 +16,12 @@ trait ErasedObserver: Debug + Send {
 }
 impl<T> ErasedObserver for Observer<T>
 where
-    T: PartialEq + Clone + Debug + Send,
+    T: PartialEq + Clone + Debug + Send + 'static,
 {
+    fn clone_box(&self) -> Box<dyn ErasedObserver> {
+        Box::new(self.clone())
+    }
+
     fn aggregate_poll(&mut self, observation: ActiveObservation) -> Result<ActiveObservation, ()> {
         match self.aggregate_poll_impl(observation) {
             Ok(f) => Ok(f.0), //extract the nongeneric part
@@ -216,6 +221,17 @@ impl AggregateObserver {
 }
 
 //boilerplates
+
+// Send/Sync: AggregateObserver is automatically Send since it contains Vec<Box<dyn ErasedObserver>>
+// where ErasedObserver: Send. It is not Sync due to &mut self methods like next() and add_observer().
+
+impl Clone for AggregateObserver {
+    fn clone(&self) -> Self {
+        Self {
+            observers: self.observers.iter().map(|obs| obs.clone_box()).collect(),
+        }
+    }
+}
 
 impl Default for AggregateObserver {
     fn default() -> Self {
