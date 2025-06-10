@@ -2,6 +2,15 @@
 name = "await_values"
 version = "0.1.0"
 edition = "2024"
+authors = ["Drew Crawford <drew@sealedabstract.com>"]
+description = "Primitives for subscribing to / notifying about changes to values"
+repository = "https://github.com/drewcrawford/await_values"
+homepage = "https://sealedabstract.com/code/await_values"
+license = "MIT OR Apache-2.0"
+keywords = ["await","observer", "subscriber", "observable"]
+categories = ["asynchronous", "caching", "gui","rust-patterns"]
+exclude = [".*"]
+
 
 [dependencies]
 atomic-waker = "~1"
