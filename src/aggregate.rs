@@ -53,7 +53,7 @@ where
 /// // Create values of different types
 /// let int_value = Value::new(42);
 /// let str_value = Value::new("hello");
-/// 
+///
 /// // Create an aggregate observer
 /// let mut aggregate = AggregateObserver::new();
 /// aggregate.add_observer(int_value.observe());
@@ -66,10 +66,10 @@ where
 /// // Get initial values
 /// let index = aggregate.next().await;
 /// assert!(index == 0 || index == 1);
-/// 
+///
 /// // Change one of the values
 /// int_value.set(100);
-/// 
+///
 /// // Wait for the change
 /// let changed_index = aggregate.next().await;
 /// assert_eq!(changed_index, 0); // The integer value changed
