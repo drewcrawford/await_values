@@ -1,9 +1,9 @@
+use crate::ObserverError;
+use atomic_waker::AtomicWaker;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use atomic_waker::AtomicWaker;
-use crate::ObserverError;
 
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub struct ActiveObservation {
     shared: Arc<Shared>,
 }
@@ -12,7 +12,9 @@ impl Drop for ActiveObservation {
     fn drop(&mut self) {
         // When the ActiveObservation is dropped, we set the notified flag to true
         // to indicate that the observation is no longer active.
-        self.shared.ready.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.shared
+            .ready
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         self.shared.waker.wake();
     }
 }
@@ -28,9 +30,12 @@ pub(crate) struct ActiveObservationFuture {
 }
 
 impl Future for ActiveObservationFuture {
-    type Output = Result<(),ObserverError>;
+    type Output = Result<(), ObserverError>;
 
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
         // Polling logic to check for changes and notify observers
         self.shared.waker.register(cx.waker());
         if self.shared.ready.load(std::sync::atomic::Ordering::Relaxed) {
@@ -47,8 +52,9 @@ pub fn observation() -> (ActiveObservation, ActiveObservationFuture) {
     });
 
     (
-        ActiveObservation { shared: shared.clone() },
-        ActiveObservationFuture { shared }
-
+        ActiveObservation {
+            shared: shared.clone(),
+        },
+        ActiveObservationFuture { shared },
     )
 }

@@ -16,13 +16,13 @@ This library uses asynchronous functions and is executor-agnostic.  It does not 
 mod active_observation;
 pub mod aggregate;
 
+use crate::active_observation::ActiveObservation;
 use std::fmt::Display;
 use std::sync::{Arc, Mutex, MutexGuard};
-use crate::active_observation::ActiveObservation;
 
 #[derive(Debug)]
 struct Shared<T> {
-    value: Option<T>,// None on hangup
+    value: Option<T>, // None on hangup
     active_observations: Vec<ActiveObservation>,
 }
 
@@ -41,18 +41,28 @@ pub struct Value<T> {
     shared: Arc<Mutex<Shared<T>>>,
 }
 
-
 impl<T> Value<T> {
     /// Creates a new `Value` with the given initial value.
     pub fn new(value: T) -> Self {
         Self {
-            shared: Arc::new(Mutex::new(Shared { value: Some(value) , active_observations: Vec::new() })),
+            shared: Arc::new(Mutex::new(Shared {
+                value: Some(value),
+                active_observations: Vec::new(),
+            })),
         }
     }
 
     /// Returns a copy of the current value.
-    pub fn get(&self) -> T where T: Clone {
-        self.shared.lock().unwrap().value.clone().expect("Value is hungup")
+    pub fn get(&self) -> T
+    where
+        T: Clone,
+    {
+        self.shared
+            .lock()
+            .unwrap()
+            .value
+            .clone()
+            .expect("Value is hungup")
     }
 
     /// Sets a new value and returns the old value.
@@ -73,8 +83,6 @@ impl<T> Value<T> {
     pub fn observe(&self) -> Observer<T> {
         Observer::new(self)
     }
-
-
 }
 
 impl<T> Drop for Value<T> {
@@ -102,7 +110,7 @@ A handle to a value that can be used to observe when the value changes remotely.
 Observers have an internal 'state' that tracks the last observed value.
 This allows them to return the current value immediately, and then wait for the next value to change.
 */
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub struct Observer<T> {
     shared: Arc<Mutex<Shared<T>>>,
     //The value last observed.
@@ -111,38 +119,41 @@ pub struct Observer<T> {
 
 impl<T> Observer<T> {
     /// Creates a new observer for the given `Value`.
-    pub fn new(value: &Value<T>) -> Self  {
+    pub fn new(value: &Value<T>) -> Self {
         let shared = value.shared.clone();
-        Self { shared, observed: None }
+        Self {
+            shared,
+            observed: None,
+        }
     }
 
     /// Returns the current value observed.
-    pub fn current_value(&mut self) -> Result<T, ObserverError> where T: Clone {
+    pub fn current_value(&mut self) -> Result<T, ObserverError>
+    where
+        T: Clone,
+    {
         let observed = self.shared.lock().unwrap().value.clone();
         if let Some(obs) = observed {
             self.observed = Some(obs.clone());
             Ok(obs)
-        }
-        else {
+        } else {
             Err(ObserverError::Hungup)
         }
     }
-
 
     /**
     Returns the next value observed.
     * If no values have been observed yet, it will return the current value.
     * Subsequent calls will yield until the value changes, at which point it will return the new value.
     */
-    pub async fn next(&mut self) -> Result<T,ObserverError> where T: Clone + PartialEq {
+    pub async fn next(&mut self) -> Result<T, ObserverError>
+    where
+        T: Clone + PartialEq,
+    {
         let mut r = self.next_when_immediately_available();
         let future = match r {
-            Ok(Ok(value)) => {
-                return Ok(value)
-            },
-            Ok(Err(ObserverError::Hungup)) => {
-                return Err(ObserverError::Hungup)
-            },
+            Ok(Ok(value)) => return Ok(value),
+            Ok(Err(ObserverError::Hungup)) => return Err(ObserverError::Hungup),
             Err(ref mut lock) => {
                 // We need to wait for a change
                 let (observation, future) = active_observation::observation();
@@ -154,20 +165,23 @@ impl<T> Observer<T> {
         let r = future.await;
         if let Err(e) = r {
             Err(e)
-        }
-        else {
+        } else {
             self.current_value()
         }
-
     }
 
     /**
-    Returns the next value observed, but only if it is immediately available.
-    For this purpose, the next value is considered immediately available if the value hang up.
-    * If no values have been observed yet, it will return the current value.
-    * If the value has not changed since the last observation, it will return an error.
-*/
-    fn next_when_immediately_available(&mut self) -> Result<Result<T,ObserverError>,MutexGuard<Shared<T>>> where T: PartialEq + Clone {
+        Returns the next value observed, but only if it is immediately available.
+        For this purpose, the next value is considered immediately available if the value hang up.
+        * If no values have been observed yet, it will return the current value.
+        * If the value has not changed since the last observation, it will return an error.
+    */
+    fn next_when_immediately_available(
+        &mut self,
+    ) -> Result<Result<T, ObserverError>, MutexGuard<Shared<T>>>
+    where
+        T: PartialEq + Clone,
+    {
         if let Some(last_observed) = &self.observed {
             let lock = self.shared.lock().unwrap();
             //take a new observation
@@ -181,70 +195,78 @@ impl<T> Observer<T> {
                     // If the value is None, it means the value has been dropped
                     Ok(Err(ObserverError::Hungup))
                 }
-            }
-            else {
+            } else {
                 Err(lock) // hold the lock for the caller to use
             }
-        }
-        else {
+        } else {
             Ok(self.current_value())
         }
     }
 
-
     /**
-    Returns either the underling value if available, along with the unused ActiveObservationFuture.
-    Or else installs the observer and returns a vacuous Err.
-*/
-    pub(crate) fn aggregate_poll_impl(&mut self, observer: ActiveObservation) -> Result<(ActiveObservation,Result<T,ObserverError>),()> where T: PartialEq + Clone {
+        Returns either the underling value if available, along with the unused ActiveObservationFuture.
+        Or else installs the observer and returns a vacuous Err.
+    */
+    pub(crate) fn aggregate_poll_impl(
+        &mut self,
+        observer: ActiveObservation,
+    ) -> Result<(ActiveObservation, Result<T, ObserverError>), ()>
+    where
+        T: PartialEq + Clone,
+    {
         match self.next_when_immediately_available() {
-            Ok(answer) => {
-                Ok((observer,answer))
-            }
+            Ok(answer) => Ok((observer, answer)),
             Err(mut lock) => {
                 lock.active_observations.push(observer);
                 Err(())
             }
         }
     }
-    
+
     ///Determines if the observer has a value available without blocking.
-    pub(crate) fn observe_if_distinct(&mut self) -> bool  where T: PartialEq + Clone {
+    pub(crate) fn observe_if_distinct(&mut self) -> bool
+    where
+        T: PartialEq + Clone,
+    {
         let r = self.next_when_immediately_available();
         match r {
-            Ok(..) => true, // Value is available and distinct
+            Ok(..) => true,  // Value is available and distinct
             Err(_) => false, // No value available
         }
     }
-    
+
     ///Determines if a new value can be read, without blocking or changing the internal state.
-    /// 
+    ///
     /// For this purpose, a hungup value is considered dirty.
-    pub fn is_dirty(&self) -> bool where T: PartialEq {
+    pub fn is_dirty(&self) -> bool
+    where
+        T: PartialEq,
+    {
         let lock = self.shared.lock().unwrap();
         match &lock.value {
             Some(value) => {
                 // If the value is not equal to the last observed value, it's dirty
                 self.observed.as_ref().map_or(true, |obs| obs != value)
-            },
+            }
             None => true, // If the value is None (hung up), it's considered dirty
-            
         }
     }
-
-
-
 }
 
 //boilerplates
 
-impl <T> Default for Value<T> where T: Default {
+impl<T> Default for Value<T>
+where
+    T: Default,
+{
     fn default() -> Self {
         Self::new(T::default())
     }
-
 }
-impl <T> Display for Value<T> where T: Display + Clone {
+impl<T> Display for Value<T>
+where
+    T: Display + Clone,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Value({})", self.get())
     }
@@ -263,9 +285,7 @@ impl Display for ObserverError {
         }
     }
 }
-impl std::error::Error for ObserverError {
-
-}
+impl std::error::Error for ObserverError {}
 
 impl<T> From<Value<T>> for Observer<T> {
     fn from(value: Value<T>) -> Self {
@@ -273,10 +293,12 @@ impl<T> From<Value<T>> for Observer<T> {
     }
 }
 
-#[cfg(test)] mod tests {
+#[cfg(test)]
+mod tests {
     use test_executors::async_test;
 
-    #[test] fn test_value() {
+    #[test]
+    fn test_value() {
         let mut value = super::Value::new(42);
         assert_eq!(value.get(), 42);
 
@@ -285,7 +307,8 @@ impl<T> From<Value<T>> for Observer<T> {
         assert_eq!(value.get(), 100);
     }
 
-    #[test] fn test_observer() {
+    #[test]
+    fn test_observer() {
         let mut value = super::Value::new(42);
         let mut observer = value.observe();
         assert_eq!(observer.current_value().unwrap(), 42);
@@ -293,7 +316,8 @@ impl<T> From<Value<T>> for Observer<T> {
         assert_eq!(observer.current_value().unwrap(), 100);
     }
 
-    #[async_test] async fn test_observer_next() {
+    #[async_test]
+    async fn test_observer_next() {
         let mut value = super::Value::new(42);
         let mut observer = value.observe();
         assert_eq!(observer.current_value().unwrap(), 42);
@@ -314,7 +338,8 @@ impl<T> From<Value<T>> for Observer<T> {
         assert_eq!(next_value, 200);
     }
 
-    #[async_test] async fn drop_value() {
+    #[async_test]
+    async fn drop_value() {
         let value = super::Value::new(42);
         let mut observer = value.observe();
         assert_eq!(observer.current_value().unwrap(), 42);
@@ -331,6 +356,10 @@ impl<T> From<Value<T>> for Observer<T> {
 
         //should work again back to back
         let result2 = observer.next().await;
-        assert!(result2.is_err(), "Expected error after value drop, got: {:?}", result2);
+        assert!(
+            result2.is_err(),
+            "Expected error after value drop, got: {:?}",
+            result2
+        );
     }
 }
