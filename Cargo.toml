@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 keywords = ["await","observer", "subscriber", "observable"]
 categories = ["asynchronous", "caching", "gui","rust-patterns"]
 exclude = [".*"]
+rust-version = "1.85.1"
 
 
 [dependencies]
