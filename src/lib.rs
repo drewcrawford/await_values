@@ -3,16 +3,97 @@ Primitives for subscribing to / notifying about changes to values.
 
 ![logo](../../../art/logo.png)
 
+This library provides a simple way to create observable values that can notify multiple
+observers when they change. It's particularly useful for GUI applications, state management,
+and reactive programming patterns.
+
+# Core Concepts
+
 This library primarily imagines your value type is:
 * `Clone` - so that it can be cloned for observers.
 * `PartialEq` - so that we can diff values and only notify observers when the value changes.
 
 Our cast of characters includes:
-* [Value] - Allocates storage for a value.
-* [Observer] - A handle to a value that can be used to observe when the value changes remotely.
-* [aggregate::AggregateObserver] - A handle to multiple heterogeneous values that can be used to observe when any of the values change.
+* [`Value`] - Allocates storage for a value that can be observed.
+* [`Observer`] - A handle to a value that can be used to observe when the value changes remotely.
+* [`aggregate::AggregateObserver`] - A handle to multiple heterogeneous values that can be used to observe when any of the values change.
 
-This library uses asynchronous functions and is executor-agnostic.  It does not depend on tokio.
+This library uses asynchronous functions and is executor-agnostic. It does not depend on tokio.
+
+# Quick Start
+
+```
+use await_values::{Value, Observer};
+
+# test_executors::sleep_on(async {
+// Create an observable value
+let value = Value::new(42);
+
+// Create an observer
+let mut observer = value.observe();
+
+// Get the current value
+assert_eq!(observer.next().await.unwrap(), 42);
+
+// Update the value
+value.set(100);
+
+// Observe the change
+assert_eq!(observer.next().await.unwrap(), 100);
+# });
+```
+
+# Advanced Usage
+
+## Observing Multiple Values
+
+You can observe multiple values of different types using `AggregateObserver`:
+
+```
+use await_values::{Value, aggregate::AggregateObserver};
+
+# test_executors::sleep_on(async {
+let temperature = Value::new(20.5);
+let status = Value::new("OK");
+
+let mut aggregate = AggregateObserver::new();
+aggregate.add_observer(temperature.observe());
+aggregate.add_observer(status.observe());
+
+// Wait for initial values
+let index = aggregate.next().await;
+assert!(index == 0 || index == 1);
+
+// Change a value
+temperature.set(25.0);
+
+// See which observer changed
+let changed_index = aggregate.next().await;
+assert_eq!(changed_index, 0); // temperature changed
+# });
+```
+
+# Thread Safety
+
+All types in this library are thread-safe and can be shared across threads.
+`Value` uses interior mutability with proper synchronization, making it safe to use from multiple threads.
+
+```
+use await_values::Value;
+use std::sync::Arc;
+use std::thread;
+
+// Wrap Value in Arc to share between threads
+let value = Arc::new(Value::new(0));
+let value_clone = Arc::clone(&value);
+
+let handle = thread::spawn(move || {
+    value_clone.set(42);
+});
+
+handle.join().unwrap();
+assert_eq!(value.get(), 42);
+```
 */
 
 mod active_observation;
@@ -28,9 +109,38 @@ struct Shared<T> {
     active_observations: Vec<ActiveObservation>,
 }
 
-/**
-Allocates storage for a value that can be observed.
-*/
+/// Allocates storage for a value that can be observed.
+///
+/// `Value<T>` is the primary way to create observable values in this library.
+/// It holds a value of type `T` and allows multiple [`Observer`]s to watch for changes.
+///
+/// # Thread Safety
+///
+/// `Value` is thread-safe and can be used from multiple threads. All operations
+/// use interior mutability with proper synchronization.
+///
+/// # Examples
+///
+/// ```
+/// use await_values::Value;
+///
+/// // Create a value
+/// let value = Value::new(42);
+///
+/// // Read the current value
+/// assert_eq!(value.get(), 42);
+///
+/// // Update the value
+/// let old = value.set(100);
+/// assert_eq!(old, 42);
+/// assert_eq!(value.get(), 100);
+/// ```
+///
+/// # Design Note
+///
+/// `Value` does not implement `Clone` because it also implements `Drop`, which would require
+/// reference counting to ensure that the value is not dropped while there are still observers.
+/// If you need to share a `Value` across multiple owners, wrap it in `Arc`.
 
 /*
 Design note - the problem with making this Clone is that it also implements Drop, which would require
@@ -45,6 +155,15 @@ pub struct Value<T> {
 
 impl<T> Value<T> {
     /// Creates a new `Value` with the given initial value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use await_values::Value;
+    ///
+    /// let value = Value::new("Hello, world!");
+    /// assert_eq!(value.get(), "Hello, world!");
+    /// ```
     pub fn new(value: T) -> Self {
         Self {
             shared: Arc::new(Mutex::new(Shared {
@@ -55,6 +174,20 @@ impl<T> Value<T> {
     }
 
     /// Returns a copy of the current value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the value has been dropped (hungup).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use await_values::Value;
+    ///
+    /// let value = Value::new(vec![1, 2, 3]);
+    /// let data = value.get();
+    /// assert_eq!(data, vec![1, 2, 3]);
+    /// ```
     pub fn get(&self) -> T
     where
         T: Clone,
@@ -68,6 +201,24 @@ impl<T> Value<T> {
     }
 
     /// Sets a new value and returns the old value.
+    ///
+    /// This method will notify all active observers that the value has changed,
+    /// even if the new value equals the old value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the value has been dropped (hungup).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use await_values::Value;
+    ///
+    /// let value = Value::new(10);
+    /// let old = value.set(20);
+    /// assert_eq!(old, 10);
+    /// assert_eq!(value.get(), 20);
+    /// ```
     pub fn set(&self, value: T) -> T {
         let mut lock = self.shared.lock().unwrap();
         let old = lock.value.replace(value);
@@ -82,6 +233,23 @@ impl<T> Value<T> {
     }
 
     /// Returns a new `Observer` for this `Value`.
+    ///
+    /// Each observer maintains its own state tracking which values it has seen,
+    /// allowing multiple independent observers to watch the same value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use await_values::Value;
+    ///
+    /// let value = Value::new(42);
+    /// let mut observer1 = value.observe();
+    /// let mut observer2 = value.observe();
+    ///
+    /// // Both observers can independently track changes
+    /// assert_eq!(observer1.current_value().unwrap(), 42);
+    /// assert_eq!(observer2.current_value().unwrap(), 42);
+    /// ```
     pub fn observe(&self) -> Observer<T> {
         Observer::new(self)
     }
@@ -99,19 +267,46 @@ impl<T> Drop for Value<T> {
     }
 }
 
+/// Errors that can occur when observing values.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ObserverError {
-    /// Indicates that the value has been hung up, meaning the value is no longer available and no updates will be made.
+    /// Indicates that the value has been hung up, meaning the value is no longer available
+    /// and no updates will be made.
+    ///
+    /// This occurs when the [`Value`] is dropped while observers still exist.
     Hungup,
 }
 
-/**
-A handle to a value that can be used to observe when the value changes remotely.
-
-Observers have an internal 'state' that tracks the last observed value.
-This allows them to return the current value immediately, and then wait for the next value to change.
-*/
+/// A handle to a value that can be used to observe when the value changes remotely.
+///
+/// Observers have an internal 'state' that tracks the last observed value.
+/// This allows them to return the current value immediately, and then wait for the next value to change.
+///
+/// # Cloning
+///
+/// `Observer` implements `Clone`, allowing you to create multiple independent observers
+/// from a single observer. Each clone maintains its own observation state.
+///
+/// # Examples
+///
+/// ```
+/// use await_values::Value;
+///
+/// # test_executors::sleep_on(async {
+/// let value = Value::new("initial");
+/// let mut observer = value.observe();
+///
+/// // First call returns the current value
+/// assert_eq!(observer.next().await.unwrap(), "initial");
+///
+/// // Update the value
+/// value.set("updated");
+///
+/// // Next call returns the new value
+/// assert_eq!(observer.next().await.unwrap(), "updated");
+/// # });
+/// ```
 #[derive(Debug, Clone)]
 pub struct Observer<T> {
     shared: Arc<Mutex<Shared<T>>>,
@@ -121,6 +316,19 @@ pub struct Observer<T> {
 
 impl<T> Observer<T> {
     /// Creates a new observer for the given `Value`.
+    ///
+    /// The observer starts with no observed value, meaning the first call to
+    /// [`next`](Self::next) or [`current_value`](Self::current_value) will
+    /// return the current value immediately.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use await_values::{Value, Observer};
+    ///
+    /// let value = Value::new(42);
+    /// let observer = Observer::new(&value);
+    /// ```
     pub fn new(value: &Value<T>) -> Self {
         let shared = value.shared.clone();
         Self {
@@ -130,6 +338,29 @@ impl<T> Observer<T> {
     }
 
     /// Returns the current value observed.
+    ///
+    /// This method always returns the current value from the underlying [`Value`],
+    /// updating the observer's internal state. It does not wait for changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ObserverError::Hungup`] if the underlying [`Value`] has been dropped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use await_values::Value;
+    ///
+    /// let value = Value::new(vec![1, 2, 3]);
+    /// let mut observer = value.observe();
+    ///
+    /// // Get current value
+    /// assert_eq!(observer.current_value().unwrap(), vec![1, 2, 3]);
+    ///
+    /// // Update and get new value
+    /// value.set(vec![4, 5, 6]);
+    /// assert_eq!(observer.current_value().unwrap(), vec![4, 5, 6]);
+    /// ```
     pub fn current_value(&mut self) -> Result<T, ObserverError>
     where
         T: Clone,
@@ -143,11 +374,42 @@ impl<T> Observer<T> {
         }
     }
 
-    /**
-    Returns the next value observed.
-    * If no values have been observed yet, it will return the current value.
-    * Subsequent calls will yield until the value changes, at which point it will return the new value.
-    */
+    /// Returns the next value observed.
+    ///
+    /// This method implements the core observation logic:
+    /// * If no values have been observed yet, it will return the current value immediately.
+    /// * If the value has changed since the last observation, it returns the new value immediately.
+    /// * If the value hasn't changed, it waits until the value changes, then returns the new value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ObserverError::Hungup`] if the underlying [`Value`] has been dropped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use await_values::Value;
+    /// use std::thread;
+    /// use std::time::Duration;
+    ///
+    /// # test_executors::sleep_on(async {
+    /// let value = Value::new(1);
+    /// let mut observer = value.observe();
+    ///
+    /// // First call returns immediately
+    /// assert_eq!(observer.next().await.unwrap(), 1);
+    ///
+    /// // Spawn a thread to update the value
+    /// thread::spawn(move || {
+    ///     thread::sleep(Duration::from_millis(10));
+    ///     value.set(2);
+    ///     # std::mem::forget(value); // Prevent hangup in test
+    /// });
+    ///
+    /// // This call waits for the change
+    /// assert_eq!(observer.next().await.unwrap(), 2);
+    /// # });
+    /// ```
     pub async fn next(&mut self) -> Result<T, ObserverError>
     where
         T: Clone + PartialEq,
@@ -172,12 +434,18 @@ impl<T> Observer<T> {
         }
     }
 
-    /**
-        Returns the next value observed, but only if it is immediately available.
-        For this purpose, the next value is considered immediately available if the value hang up.
-        * If no values have been observed yet, it will return the current value.
-        * If the value has not changed since the last observation, it will return an error.
-    */
+    /// Returns the next value observed, but only if it is immediately available.
+    ///
+    /// For this purpose, the next value is considered immediately available if:
+    /// - The observer has never observed a value before
+    /// - The value has changed since the last observation
+    /// - The value has been hung up (dropped)
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(Ok(T))` - A new value is available
+    /// - `Ok(Err(ObserverError::Hungup))` - The value has been dropped
+    /// - `Err(MutexGuard)` - No new value is available; returns the lock for the caller to use
     fn next_when_immediately_available(
         &mut self,
     ) -> Result<Result<T, ObserverError>, MutexGuard<Shared<T>>>
@@ -205,10 +473,11 @@ impl<T> Observer<T> {
         }
     }
 
-    /**
-        Returns either the underling value if available, along with the unused ActiveObservationFuture.
-        Or else installs the observer and returns a vacuous Err.
-    */
+    /// Returns either the underlying value if available, along with the unused ActiveObservation,
+    /// or else installs the observer and returns a vacuous Err.
+    ///
+    /// This is an internal method used by [`AggregateObserver`](crate::aggregate::AggregateObserver)
+    /// to efficiently poll multiple observers.
     pub(crate) fn aggregate_poll_impl(
         &mut self,
         observer: ActiveObservation,
@@ -225,7 +494,10 @@ impl<T> Observer<T> {
         }
     }
 
-    ///Determines if the observer has a value available without blocking.
+    /// Determines if the observer has a distinct value available without blocking.
+    ///
+    /// This is an internal method that checks if a new, different value can be read.
+    /// It updates the observer's state if a new value is available.
     pub(crate) fn observe_if_distinct(&mut self) -> bool
     where
         T: PartialEq + Clone,
@@ -237,9 +509,37 @@ impl<T> Observer<T> {
         }
     }
 
-    ///Determines if a new value can be read, without blocking or changing the internal state.
+    /// Determines if a new value can be read without blocking or changing the internal state.
     ///
-    /// For this purpose, a hungup value is considered dirty.
+    /// A value is considered "dirty" if:
+    /// - The observer has never observed any value
+    /// - The current value differs from the last observed value
+    /// - The underlying [`Value`] has been dropped (hungup)
+    ///
+    /// This method is useful for checking if calling [`next`](Self::next) would
+    /// return immediately without waiting.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use await_values::Value;
+    ///
+    /// let value = Value::new("hello");
+    /// let mut observer = value.observe();
+    ///
+    /// // Initially dirty (no value observed yet)
+    /// assert!(observer.is_dirty());
+    ///
+    /// # test_executors::sleep_on(async {
+    /// // After observing, no longer dirty
+    /// observer.next().await.unwrap();
+    /// assert!(!observer.is_dirty());
+    ///
+    /// // After value change, dirty again
+    /// value.set("world");
+    /// assert!(observer.is_dirty());
+    /// # });
+    /// ```
     pub fn is_dirty(&self) -> bool
     where
         T: PartialEq,
