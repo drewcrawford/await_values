@@ -1,0 +1,14 @@
+# simple v1  
+on: [push]
+env:
+  RUSTFLAGS: "-D warnings"
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo check
+      - run: cargo clippy --no-deps
+      - run: cargo fmt --check
+      - run: cargo doc
+      - run: cargo test
