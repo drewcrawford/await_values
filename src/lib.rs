@@ -68,7 +68,7 @@ impl<T> Value<T> {
     /// Sets a new value and returns the old value.
     pub fn set(&self, value: T) -> T {
         let mut lock = self.shared.lock().unwrap();
-        let old = std::mem::replace(&mut lock.value, Some(value));
+        let old = lock.value.replace(value);
         let observers = std::mem::take(&mut lock.active_observations);
         drop(lock); // Explicitly drop the lock before notifying observers
         Self::notify(observers);
@@ -246,7 +246,7 @@ impl<T> Observer<T> {
         match &lock.value {
             Some(value) => {
                 // If the value is not equal to the last observed value, it's dirty
-                self.observed.as_ref().map_or(true, |obs| obs != value)
+                self.observed.as_ref() != Some(value)
             }
             None => true, // If the value is None (hung up), it's considered dirty
         }
