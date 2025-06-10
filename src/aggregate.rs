@@ -131,7 +131,7 @@ mod tests {
 
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(100));
-            let mut value = value;
+            let value = value;
             value.set(3);
             //don't hangup
             std::mem::forget(value);
@@ -148,7 +148,7 @@ mod tests {
         assert_eq!(o1, 0);
 
         std::thread::spawn(move || {
-            let mut v = v;
+            let v = v;
             for _ in 0..5 {
                 std::thread::sleep(std::time::Duration::from_millis(10));
                 v.set(0);

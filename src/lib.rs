@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn test_value() {
-        let mut value = super::Value::new(42);
+        let value = super::Value::new(42);
         assert_eq!(value.get(), 42);
 
         let old_value = value.set(100);
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn test_observer() {
-        let mut value = super::Value::new(42);
+        let value = super::Value::new(42);
         let mut observer = value.observe();
         assert_eq!(observer.current_value().unwrap(), 42);
         value.set(100);
@@ -318,7 +318,7 @@ mod tests {
 
     #[async_test]
     async fn test_observer_next() {
-        let mut value = super::Value::new(42);
+        let value = super::Value::new(42);
         let mut observer = value.observe();
         assert_eq!(observer.current_value().unwrap(), 42);
 
