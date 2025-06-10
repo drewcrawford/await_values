@@ -1,6 +1,8 @@
 /*!
 Primitives for subscribing to / notifying about changes to values.
 
+![logo](../../../art/logo.png)
+
 This library primarily imagines your value type is:
 * `Clone` - so that it can be cloned for observers.
 * `PartialEq` - so that we can diff values and only notify observers when the value changes.

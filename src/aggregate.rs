@@ -1,3 +1,8 @@
+//! Support for aggregating multiple heterogeneous observers into a single observer.
+//!
+//! This module provides [`AggregateObserver`], which can hold multiple observers of different types
+//! and wait for any of them to produce a new value.
+
 use crate::Observer;
 use crate::active_observation::ActiveObservation;
 use std::fmt::Debug;
@@ -28,21 +33,78 @@ where
     }
 }
 
-/**
-An aggregate, heterogeneous observer that can hold multiple observers of different types.
-*/
+/// An aggregate, heterogeneous observer that can hold multiple observers of different types.
+///
+/// `AggregateObserver` allows you to wait for changes on multiple [`Observer`]s simultaneously,
+/// even when they observe values of different types. This is useful when you need to react to
+/// changes from multiple sources without knowing which one will change first.
+///
+/// # Examples
+///
+/// ```
+/// # fn setup() -> (await_values::aggregate::AggregateObserver, await_values::Value<i32>, await_values::Value<&'static str>) {
+/// use await_values::{Value, aggregate::AggregateObserver};
+///
+/// // Create values of different types
+/// let int_value = Value::new(42);
+/// let str_value = Value::new("hello");
+/// 
+/// // Create an aggregate observer
+/// let mut aggregate = AggregateObserver::new();
+/// aggregate.add_observer(int_value.observe());
+/// aggregate.add_observer(str_value.observe());
+/// # (aggregate, int_value, str_value)
+/// # }
+///
+/// # test_executors::sleep_on(async {
+/// # let (mut aggregate, int_value, str_value) = setup();
+/// // Get initial values
+/// let index = aggregate.next().await;
+/// assert!(index == 0 || index == 1);
+/// 
+/// // Change one of the values
+/// int_value.set(100);
+/// 
+/// // Wait for the change
+/// let changed_index = aggregate.next().await;
+/// assert_eq!(changed_index, 0); // The integer value changed
+/// # });
+/// ```
 #[derive(Debug)]
 pub struct AggregateObserver {
     observers: Vec<Box<dyn ErasedObserver>>,
 }
 
 impl AggregateObserver {
+    /// Creates a new empty `AggregateObserver`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use await_values::aggregate::AggregateObserver;
+    ///
+    /// let aggregate = AggregateObserver::new();
+    /// ```
     pub fn new() -> Self {
         AggregateObserver {
             observers: Vec::new(),
         }
     }
 
+    /// Adds an observer to the aggregate.
+    ///
+    /// The observer can be of any type `T` that implements the required traits.
+    /// Once added, the aggregate will monitor this observer for changes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use await_values::{Value, aggregate::AggregateObserver};
+    ///
+    /// let value = Value::new(42);
+    /// let mut aggregate = AggregateObserver::new();
+    /// aggregate.add_observer(value.observe());
+    /// ```
     pub fn add_observer<T>(&mut self, observer: Observer<T>)
     where
         T: 'static + PartialEq + Clone + Debug + Send,
@@ -51,12 +113,43 @@ impl AggregateObserver {
         self.observers.push(Box::new(observer));
     }
 
-    /**
-        Polls all observers and returns the first index that has a value ready.
-
-        Because this is an aggregate observer, there may be multiple observers that are ready.
-        At the moment, there is no way to return the underlying value of the observer
-    */
+    /// Waits for the next value change from any of the observers and returns its index.
+    ///
+    /// This method will:
+    /// - Return immediately if any observer has an unobserved value change
+    /// - Otherwise, wait until any observer's value changes
+    /// - Return the index (0-based) of the first observer that has a new value
+    ///
+    /// # Returns
+    ///
+    /// The index of the observer that changed. Indices correspond to the order in which
+    /// observers were added via [`add_observer`](Self::add_observer).
+    ///
+    /// # Notes
+    ///
+    /// - If multiple observers have changed, only the index of the first one is returned
+    /// - The actual value cannot be retrieved through the aggregate; you'll need to keep
+    ///   a separate reference to the original [`Value`](crate::Value) or [`Observer`]
+    /// - This method handles "repeat" values correctly - if an observer is set to the same
+    ///   value multiple times, it won't be considered as having a new value
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use await_values::{Value, aggregate::AggregateObserver};
+    /// # test_executors::sleep_on(async {
+    /// let value1 = Value::new(1);
+    /// let value2 = Value::new("hello");
+    ///
+    /// let mut aggregate = AggregateObserver::new();
+    /// aggregate.add_observer(value1.observe());
+    /// aggregate.add_observer(value2.observe());
+    ///
+    /// // Wait for either value to change
+    /// let changed_index = aggregate.next().await;
+    /// println!("Observer {} changed", changed_index);
+    /// # });
+    /// ```
     pub async fn next(&mut self) -> usize {
         loop {
             let (active_observation, active_future) = crate::active_observation::observation();
@@ -84,9 +177,39 @@ impl AggregateObserver {
         }
     }
 
-    ///Determines if a new value can be read, without blocking or changing the internal state.
+    /// Checks if any observer has a new value available without blocking.
     ///
-    /// For this purpose, a hungup value is considered dirty.
+    /// This method does not consume the value or change any internal state.
+    /// It's useful for checking if calling [`next`](Self::next) would return immediately.
+    ///
+    /// # Returns
+    ///
+    /// - `true` if at least one observer has a new value ready or is hung up
+    /// - `false` if all observers are up-to-date
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use await_values::{Value, aggregate::AggregateObserver};
+    ///
+    /// let value = Value::new(42);
+    /// let mut observer = value.observe();
+    /// let mut aggregate = AggregateObserver::new();
+    /// aggregate.add_observer(observer);
+    ///
+    /// // Initially dirty (observer hasn't observed initial value yet)
+    /// assert!(aggregate.is_dirty());
+    ///
+    /// # test_executors::sleep_on(async {
+    /// // After observing the value, it's no longer dirty
+    /// aggregate.next().await;
+    /// assert!(!aggregate.is_dirty());
+    ///
+    /// // After setting a new value, it becomes dirty again
+    /// value.set(100);
+    /// assert!(aggregate.is_dirty());
+    /// # });
+    /// ```
     pub fn is_dirty(&self) -> bool {
         self.observers.iter().any(|e| e.is_dirty())
     }
@@ -104,6 +227,17 @@ impl<T> From<Observer<T>> for AggregateObserver
 where
     T: 'static + PartialEq + Clone + Debug + Send,
 {
+    /// Creates an `AggregateObserver` from a single `Observer`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use await_values::{Value, aggregate::AggregateObserver};
+    ///
+    /// let value = Value::new(42);
+    /// let observer = value.observe();
+    /// let aggregate = AggregateObserver::from(observer);
+    /// ```
     fn from(observer: Observer<T>) -> Self {
         let mut aggregate = AggregateObserver::new();
         aggregate.add_observer(observer);
