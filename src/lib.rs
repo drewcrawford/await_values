@@ -97,18 +97,61 @@ assert_eq!(value.get(), 42);
 ```
 */
 
-mod active_observation;
 pub mod aggregate;
+mod flip_card;
 
-use crate::active_observation::ActiveObservation;
-use std::fmt::Display;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::ffi::c_void;
+use std::fmt::{Debug, Display};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::atomic::{AtomicPtr, AtomicU8};
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::task::{Context, Poll, Waker};
+use atomic_waker::AtomicWaker;
+use crate::flip_card::FlipCard;
+
+struct ActiveObservation {
+    id: u8,
+    notify: AtomicWaker,
+}
+
+impl ActiveObservation {
+    fn notify(&self) {
+        self.notify.wake();
+    }
+    fn register(&self, waker: &Waker)  {
+        self.notify.register(waker);
+    }
+}
+
+impl Debug for ActiveObservation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ActiveObservation(id: {})", self.id)
+    }
+}
 
 #[derive(Debug)]
 struct Shared<T> {
-    value: Option<T>, // None on hangup
-    active_observations: Vec<ActiveObservation>,
+    next_observer_id: AtomicU8,
+    value: FlipCard<Option<T>>,
+    active_observations: treiber_stack::TreiberStack<Weak<ActiveObservation>>,
 }
+
+impl<T> Shared<T> {
+    fn notify(&self) {
+        for orig in self.active_observations.drain() {
+            if let Some(active) = orig.upgrade() {
+                self.active_observations.push_arc(orig);
+                active.notify();
+            }
+            else {
+                // If the active observation has been dropped, we don't need to notify it
+                // and can safely ignore it.
+            }
+        }
+    }
+}
+
 
 /// Allocates storage for a value that can be observed.
 ///
@@ -150,11 +193,11 @@ reference counting to ensure that the value is not dropped while there are still
 It's probably easiest to wrap this in Arc, which is why set is not &mut self.
  */
 #[derive(Debug)]
-pub struct Value<T> {
-    shared: Arc<Mutex<Shared<T>>>,
+pub struct Value<T: Clone> {
+    shared: Arc<Shared<T>>,
 }
 
-impl<T> Value<T> {
+impl<T: Clone> Value<T> {
     /// Creates a new `Value` with the given initial value.
     ///
     /// # Examples
@@ -167,10 +210,11 @@ impl<T> Value<T> {
     /// ```
     pub fn new(value: T) -> Self {
         Self {
-            shared: Arc::new(Mutex::new(Shared {
-                value: Some(value),
-                active_observations: Vec::new(),
-            })),
+            shared: Arc::new(Shared {
+                value: FlipCard::new(Some(value)),
+                active_observations: treiber_stack::TreiberStack::default(),
+                next_observer_id: AtomicU8::new(0),
+            }),
         }
     }
 
@@ -193,12 +237,7 @@ impl<T> Value<T> {
     where
         T: Clone,
     {
-        self.shared
-            .lock()
-            .unwrap()
-            .value
-            .clone()
-            .expect("Value is hungup")
+        self.shared.value.read().expect("Value is hungup")
     }
 
     /// Sets a new value and returns the old value.
@@ -220,18 +259,16 @@ impl<T> Value<T> {
     /// assert_eq!(old, 10);
     /// assert_eq!(value.get(), 20);
     /// ```
-    pub fn set(&self, value: T) -> T {
-        let mut lock = self.shared.lock().unwrap();
-        let old = lock.value.replace(value);
-        let observers = std::mem::take(&mut lock.active_observations);
-        drop(lock); // Explicitly drop the lock before notifying observers
-        Self::notify(observers);
+    pub fn set(&self, value: T) -> T where T: Clone {
+        let old = self.shared.value.flip_to(Some(value));
+        self.notify();
         old.expect("Value is hungup")
     }
 
-    fn notify(who: Vec<ActiveObservation>) {
-        drop(who);
+    fn notify(&self) {
+        self.shared.notify();
     }
+
 
     /// Returns a new `Observer` for this `Value`.
     ///
@@ -256,15 +293,13 @@ impl<T> Value<T> {
     }
 }
 
-impl<T> Drop for Value<T> {
+impl<T: Clone> Drop for Value<T> {
     fn drop(&mut self) {
-        let mut lock = self.shared.lock().unwrap();
-        // Set the value to None to indicate that the value is hung up
-        lock.value = None;
-        //take the active observations
-        let observers = std::mem::take(&mut lock.active_observations);
-        drop(lock); // Explicitly drop the lock before notifying observers
-        drop(observers); // Notify observers that the value is hung up
+        // When the value is dropped, we need to notify all observers that the value is hung up.
+        // This is done by setting the value to None, which indicates that the value is no
+        // longer available.
+        self.shared.value.flip_to(None);
+        self.notify();
     }
 }
 
@@ -308,11 +343,66 @@ pub enum ObserverError {
 /// assert_eq!(observer.next().await.unwrap(), "updated");
 /// # });
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Observer<T> {
-    shared: Arc<Mutex<Shared<T>>>,
+    active_observation: Arc<ActiveObservation>,
+    shared: Arc<Shared<T>>,
     //The value last observed.
     observed: Option<T>,
+    observer_id: u8,
+}
+
+impl<T: Clone> Clone for Observer<T> {
+    /**
+    Cloning an observer creates a new instance that
+    a) Observes the same Value
+    b) Copies (but does not share) the last observed value
+    c) Creates a new active observation with a new ID
+*/
+    fn clone(&self) -> Self {
+        // Cloning an observer creates a new instance with the same shared state,
+        // but a new active observation ID.
+        let observer_id = self.shared.next_observer_id.fetch_add(1, Relaxed);
+        assert!(observer_id != u8::MAX, "Too many observers created, maximum is 255");
+        let active = Arc::new(ActiveObservation {
+            id: observer_id,
+            notify: AtomicWaker::new(),
+        });
+        self.shared.active_observations.push(Arc::downgrade(&active));
+        Self {
+            active_observation: active,
+            shared: self.shared.clone(),
+            observed: self.observed.clone(),
+            observer_id,
+        }
+    }
+}
+
+pub struct Observation<'a,T> {
+    observer: &'a mut Observer<T>,
+}
+
+impl <'a, T> Observation<'a, T> {
+    /// Creates a new observation for the given observer.
+    fn new(observer: &'a mut Observer<T>) -> Self {
+        Self { observer }
+    }
+}
+
+impl<'a, T> Future for Observation<'a, T> where T: PartialEq + Clone {
+    type Output = Result<T,ObserverError>;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.observer.active_observation.register(cx.waker());
+        // Check if the observer has a distinct value available
+        match self.get_mut().observer.next_when_immediately_available() {
+            Ok(v) => {
+                Poll::Ready(v)
+            }
+            Err(_) => {
+                Poll::Pending
+            }
+        }
+    }
 }
 
 impl<T> Observer<T> {
@@ -330,11 +420,20 @@ impl<T> Observer<T> {
     /// let value = Value::new(42);
     /// let observer = Observer::new(&value);
     /// ```
-    pub fn new(value: &Value<T>) -> Self {
+    pub fn new(value: &Value<T>) -> Self where T: Clone {
+        let observer_id = value.shared.next_observer_id.fetch_add(1, Relaxed);
+        assert!(observer_id != u8::MAX, "Too many observers created, maximum is 255");
+        let active = Arc::new(ActiveObservation {
+            id: observer_id,
+            notify: AtomicWaker::new(),
+        });
+        value.shared.active_observations.push(Arc::downgrade(&active));
         let shared = value.shared.clone();
         Self {
             shared,
             observed: None,
+            observer_id,
+            active_observation: active,
         }
     }
 
@@ -366,7 +465,7 @@ impl<T> Observer<T> {
     where
         T: Clone,
     {
-        let observed = self.shared.lock().unwrap().value.clone();
+        let observed = self.shared.value.read();
         if let Some(obs) = observed {
             self.observed = Some(obs.clone());
             Ok(obs)
@@ -411,30 +510,14 @@ impl<T> Observer<T> {
     /// assert_eq!(observer.next().await.unwrap(), 2);
     /// # });
     /// ```
-    pub async fn next(&mut self) -> Result<T, ObserverError>
+    pub fn next(&mut self) -> impl Future<Output=Result<T, ObserverError>>
     where
         T: Clone + PartialEq,
     {
-        let mut r = self.next_when_immediately_available();
-        let future = match r {
-            Ok(Ok(value)) => return Ok(value),
-            Ok(Err(ObserverError::Hungup)) => return Err(ObserverError::Hungup),
-            Err(ref mut lock) => {
-                // We need to wait for a change
-                let (observation, future) = active_observation::observation();
-                lock.active_observations.push(observation);
-                future
-            }
-        };
-        drop(r);
-        let r = future.await;
-        if let Err(e) = r {
-            Err(e)
-        } else {
-            self.current_value()
+        Observation {
+            observer: self,
         }
     }
-
     /// Returns the next value observed, but only if it is immediately available.
     ///
     /// For this purpose, the next value is considered immediately available if:
@@ -446,54 +529,40 @@ impl<T> Observer<T> {
     ///
     /// - `Ok(Ok(T))` - A new value is available
     /// - `Ok(Err(ObserverError::Hungup))` - The value has been dropped
-    /// - `Err(MutexGuard)` - No new value is available; returns the lock for the caller to use
+    /// - `Err(()))` - No new value is available.
     fn next_when_immediately_available(
         &mut self,
-    ) -> Result<Result<T, ObserverError>, MutexGuard<Shared<T>>>
+    ) -> Result<Result<T, ObserverError>, ()>
     where
         T: PartialEq + Clone,
     {
-        if let Some(last_observed) = &self.observed {
-            let lock = self.shared.lock().unwrap();
-            //take a new observation
-            if (lock.value.as_ref()) != Some(last_observed) {
-                let new_value = lock.value.clone();
-                if let Some(new_value) = new_value {
-                    // If the value has changed, update the observed value
-                    self.observed = Some(new_value.clone());
-                    Ok(Ok(new_value))
-                } else {
-                    // If the value is None, it means the value has been dropped
-                    Ok(Err(ObserverError::Hungup))
+        let observe = self.shared.value.read();
+        if let Some(observe) = observe {
+            //determine if new or not
+            if let Some(last) = &self.observed {
+                if &observe == last {
+                    // If the value is the same as the last observed value, we return an error
+                    return Err(());
                 }
-            } else {
-                Err(lock) // hold the lock for the caller to use
+                else {
+                    // If the value is different, we update the observed value and return it
+                    self.observed = Some(observe.clone());
+                    return Ok(Ok(observe));
+                }
             }
-        } else {
-            Ok(self.current_value())
+            else {
+                // If this is the first observation, we set the observed value and return it
+                self.observed = Some(observe.clone());
+                return Ok(Ok(observe));
+            }
         }
+        else {
+            // If the value is None, it means the value has been dropped (hungup)
+            return Ok(Err(ObserverError::Hungup));
+        }
+
     }
 
-    /// Returns either the underlying value if available, along with the unused ActiveObservation,
-    /// or else installs the observer and returns a vacuous Err.
-    ///
-    /// This is an internal method used by [`AggregateObserver`](crate::aggregate::AggregateObserver)
-    /// to efficiently poll multiple observers.
-    pub(crate) fn aggregate_poll_impl(
-        &mut self,
-        observer: ActiveObservation,
-    ) -> Result<(ActiveObservation, Result<T, ObserverError>), ()>
-    where
-        T: PartialEq + Clone,
-    {
-        match self.next_when_immediately_available() {
-            Ok(answer) => Ok((observer, answer)),
-            Err(mut lock) => {
-                lock.active_observations.push(observer);
-                Err(())
-            }
-        }
-    }
 
     /// Determines if the observer has a distinct value available without blocking.
     ///
@@ -543,10 +612,9 @@ impl<T> Observer<T> {
     /// ```
     pub fn is_dirty(&self) -> bool
     where
-        T: PartialEq,
+        T: PartialEq + Clone,
     {
-        let lock = self.shared.lock().unwrap();
-        match &lock.value {
+        match &self.shared.value.read() {
             Some(value) => {
                 // If the value is not equal to the last observed value, it's dirty
                 self.observed.as_ref() != Some(value)
@@ -556,9 +624,34 @@ impl<T> Observer<T> {
     }
 }
 
+impl<T> Drop for Observer<T> {
+    fn drop(&mut self) {
+        // When the observer is dropped, we need to remove it from the active observations.
+        // This ensures that we don't keep references to dropped observers.
+        let mut extra = Vec::new();
+        while let Some(orig) = self.shared.active_observations.pop() {
+            if let Some(active) = orig.upgrade() {
+                if active.id == self.observer_id {
+                    // Found the active observation for this observer, remove it
+                    break;
+                }
+                else {
+                    extra.push((orig,active));
+                }
+            }
+        }
+        // Push back any extra active observations that were popped
+        for ((orig,active)) in extra {
+            self.shared.active_observations.push_arc(orig);
+            active.notify();
+
+        }
+    }
+}
+
 //boilerplates
 
-impl<T> Default for Value<T>
+impl<T: Clone> Default for Value<T>
 where
     T: Default,
 {
@@ -575,7 +668,7 @@ where
     }
 }
 
-impl<T> From<T> for Value<T> {
+impl<T: Clone> From<T> for Value<T> {
     fn from(value: T) -> Self {
         Self::new(value)
     }
@@ -590,7 +683,7 @@ impl Display for ObserverError {
 }
 impl std::error::Error for ObserverError {}
 
-impl<T> From<Value<T>> for Observer<T> {
+impl<T: Clone> From<Value<T>> for Observer<T> {
     fn from(value: Value<T>) -> Self {
         value.observe()
     }

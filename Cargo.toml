@@ -15,5 +15,6 @@ rust-version = "1.85.1"
 
 [dependencies]
 atomic-waker = "~1"
+treiber_stack = "1.1"
 [dev-dependencies]
 test_executors = "~0.3"

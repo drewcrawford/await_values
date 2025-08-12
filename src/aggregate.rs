@@ -5,13 +5,13 @@
 //! and wait for any of them to produce a new value.
 
 use crate::Observer;
-use crate::active_observation::ActiveObservation;
 use std::fmt::Debug;
+use std::task::{Poll, Waker};
 
 trait ErasedObserver: Debug + Send {
     fn clone_box(&self) -> Box<dyn ErasedObserver>;
-    fn aggregate_poll(&mut self, observation: ActiveObservation) -> Result<ActiveObservation, ()>;
     fn observe_if_distinct(&mut self) -> bool;
+    fn register(&self, waker: &Waker);
 
     fn is_dirty(&self) -> bool;
 }
@@ -23,15 +23,13 @@ where
         Box::new(self.clone())
     }
 
-    fn aggregate_poll(&mut self, observation: ActiveObservation) -> Result<ActiveObservation, ()> {
-        match self.aggregate_poll_impl(observation) {
-            Ok(f) => Ok(f.0), //extract the nongeneric part
-            Err(_) => Err(()),
-        }
-    }
+
 
     fn observe_if_distinct(&mut self) -> bool {
         self.observe_if_distinct()
+    }
+    fn register(&self, waker: &Waker) {
+        self.active_observation.register(waker)
     }
 
     fn is_dirty(&self) -> bool {
@@ -156,30 +154,9 @@ impl AggregateObserver {
     /// println!("Observer {} changed", changed_index);
     /// # });
     /// ```
-    pub async fn next(&mut self) -> usize {
-        loop {
-            let (active_observation, active_future) = crate::active_observation::observation();
-            for (o, observer) in &mut self.observers.iter_mut().enumerate() {
-                let r = observer.aggregate_poll(active_observation.clone());
-                match r {
-                    Ok(future) => {
-                        //future is being returned to us
-                        drop(future);
-                        return o; // Return the index of the first observer that is ready
-                    }
-                    Err(_) => continue, // If the observer is not ready, continue to the next one
-                }
-            }
-
-            _ = active_future.await;
-            //look for the first observer that is ready
-            for (o, observer) in &mut self.observers.iter_mut().enumerate() {
-                if observer.observe_if_distinct() {
-                    return o; // Return the index of the first observer that is ready
-                }
-            }
-            //in "repeat" situations we may not have any observers that are ready
-            //so try again!
+    pub fn next(&mut self) -> impl Future<Output=usize> {
+        AggregateObservation {
+            observer: self,
         }
     }
 
@@ -218,6 +195,24 @@ impl AggregateObserver {
     /// ```
     pub fn is_dirty(&self) -> bool {
         self.observers.iter().any(|e| e.is_dirty())
+    }
+}
+
+struct AggregateObservation<'a> {
+    observer: &'a mut AggregateObserver,
+}
+
+impl<'a> Future for AggregateObservation<'a> {
+    type Output = usize;
+
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        for (o,observer) in self.observer.observers.iter_mut().enumerate() {
+            observer.register(cx.waker());
+            if observer.observe_if_distinct() {
+                return Poll::Ready(o); // Return the index of the first observer that is ready
+            }
+        }
+        Poll::Pending
     }
 }
 
