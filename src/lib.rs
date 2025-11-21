@@ -100,15 +100,15 @@ assert_eq!(value.get(), 42);
 pub mod aggregate;
 pub mod flip_card;
 
+use crate::flip_card::FlipCard;
+use atomic_waker::AtomicWaker;
 use std::ffi::c_void;
 use std::fmt::{Debug, Display};
 use std::pin::Pin;
-use std::sync::{Arc, Weak};
-use std::sync::atomic::{AtomicPtr, AtomicU8};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::{AtomicPtr, AtomicU8};
+use std::sync::{Arc, Weak};
 use std::task::{Context, Poll, Waker};
-use atomic_waker::AtomicWaker;
-use crate::flip_card::FlipCard;
 
 struct ActiveObservation {
     id: u8,
@@ -119,7 +119,7 @@ impl ActiveObservation {
     fn notify(&self) {
         self.notify.wake();
     }
-    fn register(&self, waker: &Waker)  {
+    fn register(&self, waker: &Waker) {
         self.notify.register(waker);
     }
 }
@@ -143,15 +143,13 @@ impl<T> Shared<T> {
             if let Some(active) = orig.upgrade() {
                 self.active_observations.push_arc(orig);
                 active.notify();
-            }
-            else {
+            } else {
                 // If the active observation has been dropped, we don't need to notify it
                 // and can safely ignore it.
             }
         }
     }
 }
-
 
 /// Allocates storage for a value that can be observed.
 ///
@@ -259,7 +257,10 @@ impl<T: Clone> Value<T> {
     /// assert_eq!(old, 10);
     /// assert_eq!(value.get(), 20);
     /// ```
-    pub fn set(&self, value: T) -> T where T: Clone {
+    pub fn set(&self, value: T) -> T
+    where
+        T: Clone,
+    {
         let old = self.shared.value.flip_to(Some(value));
         self.notify();
         old.expect("Value is hungup")
@@ -268,7 +269,6 @@ impl<T: Clone> Value<T> {
     fn notify(&self) {
         self.shared.notify();
     }
-
 
     /// Returns a new `Observer` for this `Value`.
     ///
@@ -354,21 +354,26 @@ pub struct Observer<T> {
 
 impl<T: Clone> Clone for Observer<T> {
     /**
-    Cloning an observer creates a new instance that
-    a) Observes the same Value
-    b) Copies (but does not share) the last observed value
-    c) Creates a new active observation with a new ID
-*/
+        Cloning an observer creates a new instance that
+        a) Observes the same Value
+        b) Copies (but does not share) the last observed value
+        c) Creates a new active observation with a new ID
+    */
     fn clone(&self) -> Self {
         // Cloning an observer creates a new instance with the same shared state,
         // but a new active observation ID.
         let observer_id = self.shared.next_observer_id.fetch_add(1, Relaxed);
-        assert!(observer_id != u8::MAX, "Too many observers created, maximum is 255");
+        assert!(
+            observer_id != u8::MAX,
+            "Too many observers created, maximum is 255"
+        );
         let active = Arc::new(ActiveObservation {
             id: observer_id,
             notify: AtomicWaker::new(),
         });
-        self.shared.active_observations.push(Arc::downgrade(&active));
+        self.shared
+            .active_observations
+            .push(Arc::downgrade(&active));
         Self {
             active_observation: active,
             shared: self.shared.clone(),
@@ -378,29 +383,28 @@ impl<T: Clone> Clone for Observer<T> {
     }
 }
 
-pub struct Observation<'a,T> {
+pub struct Observation<'a, T> {
     observer: &'a mut Observer<T>,
 }
 
-impl <'a, T> Observation<'a, T> {
+impl<'a, T> Observation<'a, T> {
     /// Creates a new observation for the given observer.
     fn new(observer: &'a mut Observer<T>) -> Self {
         Self { observer }
     }
 }
 
-impl<'a, T> Future for Observation<'a, T> where T: PartialEq + Clone {
-    type Output = Result<T,ObserverError>;
+impl<'a, T> Future for Observation<'a, T>
+where
+    T: PartialEq + Clone,
+{
+    type Output = Result<T, ObserverError>;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.observer.active_observation.register(cx.waker());
         // Check if the observer has a distinct value available
         match self.get_mut().observer.next_when_immediately_available() {
-            Ok(v) => {
-                Poll::Ready(v)
-            }
-            Err(_) => {
-                Poll::Pending
-            }
+            Ok(v) => Poll::Ready(v),
+            Err(_) => Poll::Pending,
         }
     }
 }
@@ -420,14 +424,23 @@ impl<T> Observer<T> {
     /// let value = Value::new(42);
     /// let observer = Observer::new(&value);
     /// ```
-    pub fn new(value: &Value<T>) -> Self where T: Clone {
+    pub fn new(value: &Value<T>) -> Self
+    where
+        T: Clone,
+    {
         let observer_id = value.shared.next_observer_id.fetch_add(1, Relaxed);
-        assert!(observer_id != u8::MAX, "Too many observers created, maximum is 255");
+        assert!(
+            observer_id != u8::MAX,
+            "Too many observers created, maximum is 255"
+        );
         let active = Arc::new(ActiveObservation {
             id: observer_id,
             notify: AtomicWaker::new(),
         });
-        value.shared.active_observations.push(Arc::downgrade(&active));
+        value
+            .shared
+            .active_observations
+            .push(Arc::downgrade(&active));
         let shared = value.shared.clone();
         Self {
             shared,
@@ -510,13 +523,11 @@ impl<T> Observer<T> {
     /// assert_eq!(observer.next().await.unwrap(), 2);
     /// # });
     /// ```
-    pub fn next(&mut self) -> impl Future<Output=Result<T, ObserverError>>
+    pub fn next(&mut self) -> impl Future<Output = Result<T, ObserverError>>
     where
         T: Clone + PartialEq,
     {
-        Observation {
-            observer: self,
-        }
+        Observation { observer: self }
     }
     /// Returns the next value observed, but only if it is immediately available.
     ///
@@ -530,9 +541,7 @@ impl<T> Observer<T> {
     /// - `Ok(Ok(T))` - A new value is available
     /// - `Ok(Err(ObserverError::Hungup))` - The value has been dropped
     /// - `Err(()))` - No new value is available.
-    fn next_when_immediately_available(
-        &mut self,
-    ) -> Result<Result<T, ObserverError>, ()>
+    fn next_when_immediately_available(&mut self) -> Result<Result<T, ObserverError>, ()>
     where
         T: PartialEq + Clone,
     {
@@ -543,26 +552,21 @@ impl<T> Observer<T> {
                 if &observe == last {
                     // If the value is the same as the last observed value, we return an error
                     return Err(());
-                }
-                else {
+                } else {
                     // If the value is different, we update the observed value and return it
                     self.observed = Some(observe.clone());
                     return Ok(Ok(observe));
                 }
-            }
-            else {
+            } else {
                 // If this is the first observation, we set the observed value and return it
                 self.observed = Some(observe.clone());
                 return Ok(Ok(observe));
             }
-        }
-        else {
+        } else {
             // If the value is None, it means the value has been dropped (hungup)
             return Ok(Err(ObserverError::Hungup));
         }
-
     }
-
 
     /// Determines if the observer has a distinct value available without blocking.
     ///
@@ -634,17 +638,15 @@ impl<T> Drop for Observer<T> {
                 if active.id == self.observer_id {
                     // Found the active observation for this observer, remove it
                     break;
-                }
-                else {
-                    extra.push((orig,active));
+                } else {
+                    extra.push((orig, active));
                 }
             }
         }
         // Push back any extra active observations that were popped
-        for ((orig,active)) in extra {
+        for ((orig, active)) in extra {
             self.shared.active_observations.push_arc(orig);
             active.notify();
-
         }
     }
 }
@@ -757,5 +759,14 @@ mod tests {
             "Expected error after value drop, got: {:?}",
             result2
         );
+    }
+    #[test]
+    fn test_observer_clone_drop_loop() {
+        let value = super::Value::new(42);
+        let observer = value.observe();
+        for _ in 0..300 {
+            let clone = observer.clone();
+            drop(clone);
+        }
     }
 }
