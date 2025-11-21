@@ -104,14 +104,15 @@ use crate::flip_card::FlipCard;
 use atomic_waker::AtomicWaker;
 use std::ffi::c_void;
 use std::fmt::{Debug, Display};
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-use std::sync::atomic::{AtomicPtr, AtomicU8};
+use std::sync::atomic::{AtomicPtr, AtomicU64};
 use std::sync::{Arc, Weak};
 use std::task::{Context, Poll, Waker};
 
 struct ActiveObservation {
-    id: u8,
+    id: u64,
     notify: AtomicWaker,
 }
 
@@ -132,7 +133,7 @@ impl Debug for ActiveObservation {
 
 #[derive(Debug)]
 struct Shared<T> {
-    next_observer_id: AtomicU8,
+    next_observer_id: AtomicU64,
     value: FlipCard<Option<T>>,
     active_observations: treiber_stack::TreiberStack<Weak<ActiveObservation>>,
 }
@@ -211,7 +212,7 @@ impl<T: Clone> Value<T> {
             shared: Arc::new(Shared {
                 value: FlipCard::new(Some(value)),
                 active_observations: treiber_stack::TreiberStack::default(),
-                next_observer_id: AtomicU8::new(0),
+                next_observer_id: AtomicU64::new(0),
             }),
         }
     }
@@ -349,7 +350,7 @@ pub struct Observer<T> {
     shared: Arc<Shared<T>>,
     //The value last observed.
     observed: Option<T>,
-    observer_id: u8,
+    observer_id: u64,
 }
 
 impl<T: Clone> Clone for Observer<T> {
@@ -363,10 +364,6 @@ impl<T: Clone> Clone for Observer<T> {
         // Cloning an observer creates a new instance with the same shared state,
         // but a new active observation ID.
         let observer_id = self.shared.next_observer_id.fetch_add(1, Relaxed);
-        assert!(
-            observer_id != u8::MAX,
-            "Too many observers created, maximum is 255"
-        );
         let active = Arc::new(ActiveObservation {
             id: observer_id,
             notify: AtomicWaker::new(),
@@ -429,10 +426,6 @@ impl<T> Observer<T> {
         T: Clone,
     {
         let observer_id = value.shared.next_observer_id.fetch_add(1, Relaxed);
-        assert!(
-            observer_id != u8::MAX,
-            "Too many observers created, maximum is 255"
-        );
         let active = Arc::new(ActiveObservation {
             id: observer_id,
             notify: AtomicWaker::new(),
