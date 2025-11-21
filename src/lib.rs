@@ -98,12 +98,12 @@ assert_eq!(value.get(), 42);
 */
 
 pub mod aggregate;
-mod flip_card;
+pub mod flip_card;
 
 use std::ffi::c_void;
 use std::fmt::{Debug, Display};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Weak};
 use std::sync::atomic::{AtomicPtr, AtomicU8};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::task::{Context, Poll, Waker};

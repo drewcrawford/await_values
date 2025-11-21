@@ -16,5 +16,9 @@ rust-version = "1.85.1"
 [dependencies]
 atomic-waker = "~1"
 treiber_stack = "1.1"
+wasm_safe_mutex = "0.1.0"
 [dev-dependencies]
 test_executors = "~0.3"
+
+[patch.crates-io]
+wasm_safe_mutex = {path = "../wasm_safe_mutex"}
