@@ -162,26 +162,28 @@ impl<T> Slot<T> {
     /// # Panics
     ///
     /// Panics if the maximum number of readers (127) is reached.
-    fn try_read(&self) -> Option<T> where T: Clone {
-        let r = self.atomic.fetch_update(Ordering::AcqRel, Ordering::Relaxed, |value| {
-            if value & WRITE != 0 {
-                // If the WRITE bit is set, we cannot read
-                None
-            } else if value == READ {
-                //maximum number of readers reached
-                panic!("Maximum number of readers reached");
-            }
-            else {
-                // Otherwise, we can read
-                Some(value + 1) // Increment the reader count
-            }
-        });
+    fn try_read(&self) -> Option<T>
+    where
+        T: Clone,
+    {
+        let r = self
+            .atomic
+            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |value| {
+                if value & WRITE != 0 {
+                    // If the WRITE bit is set, we cannot read
+                    None
+                } else if value == READ {
+                    //maximum number of readers reached
+                    panic!("Maximum number of readers reached");
+                } else {
+                    // Otherwise, we can read
+                    Some(value + 1) // Increment the reader count
+                }
+            });
         match r {
             Ok(_lock_value) => {
                 // Successfully acquired read lock
-                let data = unsafe {
-                     (&*self.data.get()).clone()
-                };
+                let data = unsafe { (&*self.data.get()).clone() };
                 self.atomic.fetch_sub(1, Ordering::Release); // Release the read lock
                 Some(data)
             }
@@ -196,14 +198,17 @@ impl<T> Slot<T> {
     /// # Safety
     ///
     /// This operation requires exclusive access (no readers or writers).
-    fn try_write(&self, data: &T) -> Option<T> where T: Clone {
-        let r = self.atomic.compare_exchange(UNLOCKED, WRITE, Ordering::Acquire, Ordering::Relaxed);
+    fn try_write(&self, data: &T) -> Option<T>
+    where
+        T: Clone,
+    {
+        let r = self
+            .atomic
+            .compare_exchange(UNLOCKED, WRITE, Ordering::Acquire, Ordering::Relaxed);
         match r {
             Ok(_) => {
                 // Successfully acquired write lock
-                let old_data = unsafe {
-                    std::ptr::replace(self.data.get(), data.clone())
-                };
+                let old_data = unsafe { std::ptr::replace(self.data.get(), data.clone()) };
                 self.atomic.store(UNLOCKED, Ordering::Release); // Release the write lock
                 Some(old_data)
             }
@@ -213,8 +218,6 @@ impl<T> Slot<T> {
             }
         }
     }
-
-
 }
 impl<T> Slot<Option<T>> {
     /// Takes the value from the slot, replacing it with `None`.
@@ -224,13 +227,16 @@ impl<T> Slot<Option<T>> {
     /// # Returns
     ///
     /// The previous value in the slot.
-    fn take(&self) -> Option<T> where T: Clone {
+    fn take(&self) -> Option<T>
+    where
+        T: Clone,
+    {
         loop {
             let r = self.try_write(&None);
             match r {
                 Some(old_data) => {
                     // Successfully took the data
-                    return old_data
+                    return old_data;
                 }
                 None => {
                     // Failed to take the data, retry
@@ -354,7 +360,7 @@ impl<T> FlipCard<T> {
     pub fn new(data0: T) -> Self {
         Self {
             data0: Slot::new(Some(data0)),
-            data1: Slot::new(None), // Initialize with zeroed data
+            data1: Slot::new(None),             // Initialize with zeroed data
             read_data_0: AtomicBool::new(true), // Start with data0 being read
         }
     }
@@ -374,7 +380,7 @@ impl<T> FlipCard<T> {
     /// use await_values::flip_card::FlipCard;
     ///
     /// let card = FlipCard::new("hello");
-    /// 
+    ///
     /// // Replace value and get the old one
     /// let old = card.flip_to("world");
     /// assert_eq!(old, "hello");
@@ -406,7 +412,7 @@ impl<T> FlipCard<T> {
     /// });
     ///
     /// handle.join().unwrap();
-    /// 
+    ///
     /// // Final value should be 5
     /// assert_eq!(card.read(), 5);
     /// ```
@@ -423,7 +429,10 @@ impl<T> FlipCard<T> {
     /// 2. Attempt to write the new value to the inactive slot
     /// 3. Atomically flip the read pointer to the newly written slot
     /// 4. Extract and return the old value from the now-inactive slot
-    pub fn flip_to(&self, data: T) -> T where T: Clone {
+    pub fn flip_to(&self, data: T) -> T
+    where
+        T: Clone,
+    {
         let opt_data = Some(data);
         loop {
             let read_0 = self.read_data_0.load(Ordering::Relaxed);
@@ -432,19 +441,17 @@ impl<T> FlipCard<T> {
                 if self.data1.try_write(&opt_data).is_some() {
                     self.read_data_0.store(false, Ordering::Release);
                     // Successfully wrote to slot 1, now read from slot 0
-                    return self.data0.take().expect("Prior value")
+                    return self.data0.take().expect("Prior value");
                 }
-            }
-            else {
+            } else {
                 // we want to write into slot 0
                 if self.data0.try_write(&opt_data).is_some() {
                     self.read_data_0.store(true, Ordering::Release);
                     // Successfully wrote to slot 0, now read from slot 1
-                    return self.data1.take().expect("Prior value")
+                    return self.data1.take().expect("Prior value");
                 }
             }
             std::hint::spin_loop();
-
         }
     }
     /// Reads the current value.
@@ -459,7 +466,7 @@ impl<T> FlipCard<T> {
     /// use await_values::flip_card::FlipCard;
     ///
     /// let card = FlipCard::new(vec![1, 2, 3]);
-    /// 
+    ///
     /// // Read returns a clone of the current value
     /// let value = card.read();
     /// assert_eq!(value, vec![1, 2, 3]);
@@ -508,17 +515,28 @@ impl<T> FlipCard<T> {
     /// then attempts to read from that slot. If the read fails (due to a
     /// concurrent write), it spins and retries. The spin loop uses CPU hints
     /// for efficiency.
-    pub fn read(&self) -> T where T: Clone {
+    pub fn read(&self) -> T
+    where
+        T: Clone,
+    {
         loop {
             if self.read_data_0.load(Ordering::Acquire) {
                 // Read from slot 0
                 if let Some(data) = self.data0.try_read() {
-                    return data.expect("No data in slot 0");
+                    if let Some(val) = data {
+                        return val;
+                    }
+                    // If we got None, it means the slot was cleared concurrently.
+                    // This implies a writer flipped to slot 1 and cleared slot 0.
+                    // We should retry the loop to pick up the new active slot.
                 }
             } else {
                 // Read from slot 1
                 if let Some(data) = self.data1.try_read() {
-                    return data.expect("No data in slot 1");
+                    if let Some(val) = data {
+                        return val;
+                    }
+                    // Same as above, slot was cleared concurrently. Retry.
                 }
             }
             std::hint::spin_loop(); // Wait for data to be available
@@ -537,7 +555,7 @@ mod tests {
     fn test_basic_operations() {
         let card = FlipCard::new(42);
         assert_eq!(card.read(), 42);
-        
+
         let old = card.flip_to(100);
         assert_eq!(old, 42);
         assert_eq!(card.read(), 100);
@@ -551,7 +569,7 @@ mod tests {
         assert_eq!(card.read(), "hello");
         card.flip_to(String::from("world"));
         assert_eq!(card.read(), "world");
-        
+
         // Vector
         let card = FlipCard::new(vec![1, 2, 3]);
         assert_eq!(card.read(), vec![1, 2, 3]);
@@ -565,16 +583,18 @@ mod tests {
     fn test_concurrent_reads() {
         let card = Arc::new(FlipCard::new(42));
         let barrier = Arc::new(Barrier::new(10));
-        
-        let handles: Vec<_> = (0..10).map(|_| {
-            let card = Arc::clone(&card);
-            let barrier = Arc::clone(&barrier);
-            thread::spawn(move || {
-                barrier.wait();
-                card.read()
+
+        let handles: Vec<_> = (0..10)
+            .map(|_| {
+                let card = Arc::clone(&card);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    card.read()
+                })
             })
-        }).collect();
-        
+            .collect();
+
         for handle in handles {
             assert_eq!(handle.join().unwrap(), 42);
         }
@@ -585,7 +605,7 @@ mod tests {
     fn test_concurrent_read_write() {
         let card = Arc::new(FlipCard::new(0));
         let barrier = Arc::new(Barrier::new(11));
-        
+
         // Writer thread
         let writer = {
             let card = Arc::clone(&card);
@@ -597,32 +617,37 @@ mod tests {
                 }
             })
         };
-        
+
         // Reader threads
-        let readers: Vec<_> = (0..10).map(|_| {
-            let card = Arc::clone(&card);
-            let barrier = Arc::clone(&barrier);
-            thread::spawn(move || {
-                barrier.wait();
-                let mut values = Vec::new();
-                for _ in 0..10 {
-                    values.push(card.read());
-                }
-                values
+        let readers: Vec<_> = (0..10)
+            .map(|_| {
+                let card = Arc::clone(&card);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    let mut values = Vec::new();
+                    for _ in 0..10 {
+                        values.push(card.read());
+                    }
+                    values
+                })
             })
-        }).collect();
-        
+            .collect();
+
         writer.join().unwrap();
-        
+
         for handle in readers {
             let values = handle.join().unwrap();
             // Each reader should see monotonically increasing values
             for window in values.windows(2) {
-                assert!(window[0] <= window[1], 
-                    "Values should be monotonic: {:?}", values);
+                assert!(
+                    window[0] <= window[1],
+                    "Values should be monotonic: {:?}",
+                    values
+                );
             }
         }
-        
+
         // Final value should be 100
         assert_eq!(card.read(), 100);
     }
@@ -631,12 +656,12 @@ mod tests {
     #[test]
     fn test_sequential_writes() {
         let card = FlipCard::new(0);
-        
+
         for i in 1..=1000 {
             let old = card.flip_to(i);
             assert_eq!(old, i - 1);
         }
-        
+
         assert_eq!(card.read(), 1000);
     }
 
@@ -648,24 +673,24 @@ mod tests {
             name: String,
             value: i32,
         }
-        
+
         let card = FlipCard::new(Config {
             name: "initial".to_string(),
             value: 0,
         });
-        
+
         let config = card.read();
         assert_eq!(config.name, "initial");
         assert_eq!(config.value, 0);
-        
+
         let old = card.flip_to(Config {
             name: "updated".to_string(),
             value: 42,
         });
-        
+
         assert_eq!(old.name, "initial");
         assert_eq!(old.value, 0);
-        
+
         let new = card.read();
         assert_eq!(new.name, "updated");
         assert_eq!(new.value, 42);
