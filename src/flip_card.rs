@@ -430,7 +430,7 @@ impl<T> FlipCard<T> {
             if read_0 {
                 // we want to write into slot 1
                 if self.data1.try_write(&opt_data).is_some() {
-                    self.read_data_0.store(false, Ordering::Relaxed);
+                    self.read_data_0.store(false, Ordering::Release);
                     // Successfully wrote to slot 1, now read from slot 0
                     return self.data0.take().expect("Prior value")
                 }
@@ -438,7 +438,7 @@ impl<T> FlipCard<T> {
             else {
                 // we want to write into slot 0
                 if self.data0.try_write(&opt_data).is_some() {
-                    self.read_data_0.store(true, Ordering::Relaxed);
+                    self.read_data_0.store(true, Ordering::Release);
                     // Successfully wrote to slot 0, now read from slot 1
                     return self.data1.take().expect("Prior value")
                 }
