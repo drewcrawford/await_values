@@ -718,6 +718,37 @@ mod tests {
         assert_eq!(card.read(), 100);
     }
 
+    /// Test that Clone creates independent FlipCards
+    #[test]
+    fn test_clone() {
+        let card1 = FlipCard::new(42);
+        let card2 = card1.clone();
+
+        // Both should start with the same value
+        assert_eq!(card1.read(), 42);
+        assert_eq!(card2.read(), 42);
+
+        // Update card1
+        card1.flip_to(100);
+        assert_eq!(card1.read(), 100);
+        assert_eq!(card2.read(), 42); // card2 should be unchanged
+
+        // Update card2
+        card2.flip_to(200);
+        assert_eq!(card1.read(), 100); // card1 should be unchanged
+        assert_eq!(card2.read(), 200);
+    }
+
+    /// Test that From trait works correctly
+    #[test]
+    fn test_from() {
+        let card: FlipCard<i32> = 42.into();
+        assert_eq!(card.read(), 42);
+
+        let card = FlipCard::from("hello");
+        assert_eq!(card.read(), "hello");
+    }
+
     /// Test that multiple writes work correctly
     #[test]
     fn test_sequential_writes() {
