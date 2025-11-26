@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lock-free double-buffering data structure for concurrent read/write operations.
 //!
 //! This module provides the [`FlipCard`] type, a specialized concurrent data structure

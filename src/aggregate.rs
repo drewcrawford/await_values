@@ -1,4 +1,4 @@
-//SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Support for aggregating multiple heterogeneous observers into a single observer.
 //!
 //! This module provides [`AggregateObserver`], which can hold multiple observers of different types
