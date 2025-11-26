@@ -625,6 +625,11 @@ mod tests {
     use futures_util::StreamExt;
     use test_executors::async_test;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::thread;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_thread as thread;
+
     #[test]
     fn test_value() {
         let value = super::Value::new(42);
@@ -656,8 +661,8 @@ mod tests {
         assert_eq!(next_value, 100);
 
         //read first
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(100));
+        thread::spawn(move || {
+            thread::sleep(std::time::Duration::from_millis(100));
             value.set(200);
             std::mem::forget(value); //don't hangup
         });
@@ -673,8 +678,8 @@ mod tests {
         assert_eq!(observer.current_value().unwrap(), 42);
 
         // Spawn a task that will drop the value after some time
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(100));
+        thread::spawn(move || {
+            thread::sleep(std::time::Duration::from_millis(100));
             drop(value);
         });
 

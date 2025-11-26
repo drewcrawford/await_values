@@ -218,6 +218,11 @@ mod tests {
     use futures_util::StreamExt;
     use test_executors::async_test;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::thread;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_thread as thread;
+
     #[async_test]
     async fn test_aggregate_observer() {
         let value = Value::new(2);
@@ -230,8 +235,8 @@ mod tests {
         let _ = o.next().await;
         let _ = o.next().await;
 
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(100));
+        thread::spawn(move || {
+            thread::sleep(std::time::Duration::from_millis(100));
             let value = value;
             value.set(3);
             //don't hangup
@@ -248,7 +253,7 @@ mod tests {
         let o1 = o.next().await;
         assert_eq!(o1, Some(0));
 
-        std::thread::spawn(move || {
+        thread::spawn(move || {
             let v = v;
             for _ in 0..5 {
                 std::thread::sleep(std::time::Duration::from_millis(10));
