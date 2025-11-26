@@ -223,6 +223,11 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     use wasm_thread as thread;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::time::Instant;
+    #[cfg(target_arch = "wasm32")]
+    use web_time::Instant;
+
     #[async_test]
     async fn test_aggregate_observer() {
         let value = Value::new(2);
@@ -256,7 +261,7 @@ mod tests {
         thread::spawn(move || {
             let v = v;
             for _ in 0..5 {
-                std::thread::sleep(std::time::Duration::from_millis(10));
+                thread::sleep(std::time::Duration::from_millis(10));
                 v.set(0);
             }
             v.set(1);
@@ -264,7 +269,7 @@ mod tests {
             std::mem::forget(v);
         });
 
-        let begin = std::time::Instant::now();
+        let begin = Instant::now();
 
         let o2 = o.next().await;
         assert!(
