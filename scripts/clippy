@@ -1,0 +1,4 @@
+#!/bin/bash
+set -e
+RUSTFLAGS="-D warnings" cargo clippy
+RUSTFLAGS="-D warnings" cargo +nightly clippy --target=wasm32-unknown-unknown

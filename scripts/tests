@@ -1,0 +1,4 @@
+#!/bin/bash
+set -e
+RUSTDOCFLAGS="-D warnings" cargo test
+RUSTDOCFLAGS="-D warnings" cargo +nightly test --target=wasm32-unknown-unknown

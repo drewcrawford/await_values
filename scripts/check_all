@@ -1,0 +1,8 @@
+#!/bin/bash
+set -e
+
+scripts/fmt
+scripts/check
+scripts/clippy
+scripts/docs
+scripts/tests

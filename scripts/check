@@ -1,0 +1,4 @@
+#!/bin/bash
+set -e
+RUSTFLAGS="-D warnings" cargo check
+RUSTFLAGS="-D warnings" cargo +nightly check --target=wasm32-unknown-unknown
