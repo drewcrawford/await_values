@@ -15,11 +15,13 @@ This library primarily imagines your value type is:
 * `PartialEq` - so that we can diff values and only notify observers when the value changes.
 
 Our cast of characters includes:
-* [`Value`] - Allocates storage for a value that can be observed.
-* [`Observer`] - A handle to a value that can be used to observe when the value changes remotely.
-* [`aggregate::AggregateObserver`] - A handle to multiple heterogeneous values that can be used to observe when any of the values change.
+* `Value` - Allocates storage for a value that can be observed.
+* `Observer` - A handle to a value that can be used to observe when the value changes remotely.
+* `aggregate::AggregateObserver` - A handle to multiple heterogeneous values that can be used to observe when any of the values change.
 
 This library uses asynchronous functions and is executor-agnostic. It does not depend on tokio.
+
+The library uses lock-free atomic algorithms for high-performance concurrent access.
 
 ## Quick Start
 
@@ -69,7 +71,6 @@ temperature.set(25.0);
 let changed_index = aggregate.next().await;
 assert_eq!(changed_index, 0); // temperature changed
 ```
-
 ## Thread Safety
 
 All types in this library are thread-safe and can be shared across threads.
