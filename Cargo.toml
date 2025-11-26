@@ -8,7 +8,7 @@ repository = "https://github.com/drewcrawford/await_values"
 homepage = "https://sealedabstract.com/code/await_values"
 license = "MIT OR Apache-2.0"
 keywords = ["await","observer", "subscriber", "observable"]
-categories = ["asynchronous", "caching", "gui","rust-patterns"]
+categories = ["asynchronous", "concurrency", "gui", "rust-patterns"]
 exclude = [".*"]
 rust-version = "1.85.1"
 
