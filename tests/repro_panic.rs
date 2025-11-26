@@ -1,7 +1,6 @@
 use await_values::flip_card::FlipCard;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
 
 #[test]
 fn reproduce_panic() {
