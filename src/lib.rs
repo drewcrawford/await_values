@@ -625,6 +625,9 @@ mod tests {
     use futures_util::StreamExt;
     use test_executors::async_test;
 
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
     #[cfg(not(target_arch = "wasm32"))]
     use std::thread;
     #[cfg(target_arch = "wasm32")]
