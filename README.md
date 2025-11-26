@@ -21,12 +21,18 @@ Our cast of characters includes:
 
 This library uses asynchronous functions and is executor-agnostic. It does not depend on tokio.
 
-The library uses lock-free atomic algorithms for high-performance concurrent access.
+The library uses lock-free atomic algorithms internally for high-performance concurrent access. The internal `FlipCard` implementation provides a lock-free double-buffer that allows readers to never block, supporting up to 127 concurrent readers per slot with atomic synchronization.
 
 ## Quick Start
 
+Both `Observer` and `aggregate::AggregateObserver` implement the `futures_core::Stream` trait,
+which is the primary way to consume values from observers. The `Stream` trait provides the `next()`
+method (via `StreamExt`) that returns `Option<T>`, where `None` indicates the underlying value has
+been dropped.
+
 ```rust
 use await_values::{Value, Observer};
+use futures_util::StreamExt;
 
 // Create an observable value
 let value = Value::new(42);
@@ -34,7 +40,7 @@ let value = Value::new(42);
 // Create an observer
 let mut observer = value.observe();
 
-// Get the current value
+// Get the current value (using Stream trait's next() method)
 assert_eq!(observer.next().await.unwrap(), 42);
 
 // Update the value
@@ -52,6 +58,7 @@ You can observe multiple values of different types using `AggregateObserver`:
 
 ```rust
 use await_values::{Value, aggregate::AggregateObserver};
+use futures_util::StreamExt;
 
 let temperature = Value::new(20.5);
 let status = Value::new("OK");
@@ -62,15 +69,16 @@ aggregate.add_observer(status.observe());
 
 // Wait for initial values
 let index = aggregate.next().await;
-assert!(index == 0 || index == 1);
+assert!(index == Some(0) || index == Some(1));
 
 // Change a value
 temperature.set(25.0);
 
 // See which observer changed
 let changed_index = aggregate.next().await;
-assert_eq!(changed_index, 0); // temperature changed
+assert_eq!(changed_index, Some(0)); // temperature changed
 ```
+
 ## Thread Safety
 
 All types in this library are thread-safe and can be shared across threads.

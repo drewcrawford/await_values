@@ -26,7 +26,9 @@ The library uses lock-free atomic algorithms internally for high-performance con
 # Quick Start
 
 Both [`Observer`] and [`aggregate::AggregateObserver`] implement the `futures_core::Stream` trait,
-allowing them to be used with standard async stream combinators.
+which is the primary way to consume values from observers. The `Stream` trait provides the `next()`
+method (via `StreamExt`) that returns `Option<T>`, where `None` indicates the underlying value has
+been dropped.
 
 ```
 use await_values::{Value, Observer};
