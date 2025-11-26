@@ -21,6 +21,8 @@ Our cast of characters includes:
 
 This library uses asynchronous functions and is executor-agnostic. It does not depend on tokio.
 
+The library uses lock-free atomic algorithms internally for high-performance concurrent access. The [`flip_card::FlipCard`] implementation provides a lock-free double-buffer that allows readers to never block, supporting up to 127 concurrent readers per slot with atomic synchronization.
+
 # Quick Start
 
 ```
@@ -102,12 +104,11 @@ pub mod flip_card;
 
 use crate::flip_card::FlipCard;
 use atomic_waker::AtomicWaker;
-use std::ffi::c_void;
 use std::fmt::{Debug, Display};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-use std::sync::atomic::{AtomicPtr, AtomicU64};
+use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Weak};
 use std::task::{Context, Poll, Waker};
 
@@ -380,14 +381,41 @@ impl<T: Clone> Clone for Observer<T> {
     }
 }
 
+/// A future that resolves when the observed value changes.
+///
+/// This type is returned by [`Observer::next`] and implements [`Future`].
+/// It represents an in-progress observation that will complete when the
+/// underlying value changes to something different from the last observed value.
+///
+/// # Implementation Details
+///
+/// This struct borrows the observer mutably for the duration of the observation,
+/// ensuring exclusive access to the observer's internal state during the wait.
+///
+/// You typically won't construct this type directly; instead, use [`Observer::next`]:
+///
+/// ```
+/// use await_values::Value;
+///
+/// # test_executors::sleep_on(async {
+/// let value = Value::new(42);
+/// let mut observer = value.observe();
+///
+/// // This creates an Observation future
+/// let result = observer.next().await;
+/// assert_eq!(result.unwrap(), 42);
+/// # });
+/// ```
 pub struct Observation<'a, T> {
     observer: &'a mut Observer<T>,
 }
 
-impl<'a, T> Observation<'a, T> {
-    /// Creates a new observation for the given observer.
-    fn new(observer: &'a mut Observer<T>) -> Self {
-        Self { observer }
+
+impl<'a, T: std::fmt::Debug> std::fmt::Debug for Observation<'a, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Observation")
+            .field("observer", &self.observer)
+            .finish()
     }
 }
 
@@ -637,7 +665,7 @@ impl<T> Drop for Observer<T> {
             }
         }
         // Push back any extra active observations that were popped
-        for ((orig, active)) in extra {
+        for (orig, active) in extra {
             self.shared.active_observations.push_arc(orig);
             active.notify();
         }
