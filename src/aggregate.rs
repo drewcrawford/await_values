@@ -5,7 +5,7 @@
 //! and wait for any of them to produce a new value.
 
 use crate::Observer;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
@@ -189,6 +189,12 @@ impl Default for AggregateObserver {
     }
 }
 
+impl Display for AggregateObserver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AggregateObserver({} observers)", self.observers.len())
+    }
+}
+
 impl<T> From<Observer<T>> for AggregateObserver
 where
     T: 'static + PartialEq + Clone + Debug + Send,
@@ -277,5 +283,26 @@ mod tests {
             "Should have waited for the next value"
         );
         assert_eq!(o2, Some(0));
+    }
+
+    #[test]
+    fn test_aggregate_display() {
+        let value = Value::new(42);
+        let mut aggregate = AggregateObserver::new();
+
+        // Empty aggregate
+        let empty_str = format!("{}", aggregate);
+        assert_eq!(empty_str, "AggregateObserver(0 observers)");
+
+        // With one observer
+        aggregate.add_observer(value.observe());
+        let one_str = format!("{}", aggregate);
+        assert_eq!(one_str, "AggregateObserver(1 observers)");
+
+        // With two observers
+        let value2 = Value::new("test");
+        aggregate.add_observer(value2.observe());
+        let two_str = format!("{}", aggregate);
+        assert_eq!(two_str, "AggregateObserver(2 observers)");
     }
 }

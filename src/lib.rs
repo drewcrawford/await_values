@@ -620,6 +620,35 @@ impl<T: Clone> From<Value<T>> for Observer<T> {
     }
 }
 
+impl<T> Display for Observer<T>
+where
+    T: Clone,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Observer(id: {})", self.observer_id)
+    }
+}
+
+impl<T> PartialEq for Value<T>
+where
+    T: PartialEq + Clone,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.get() == other.get()
+    }
+}
+
+impl<T> Eq for Value<T> where T: Eq + Clone {}
+
+impl<T> std::hash::Hash for Value<T>
+where
+    T: std::hash::Hash + Clone,
+{
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.get().hash(state);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use futures_util::StreamExt;
@@ -706,5 +735,70 @@ mod tests {
             let clone = observer.clone();
             drop(clone);
         }
+    }
+
+    #[test]
+    fn test_value_partialeq() {
+        let value1 = super::Value::new(42);
+        let value2 = super::Value::new(42);
+        let value3 = super::Value::new(100);
+
+        assert_eq!(value1, value2);
+        assert_ne!(value1, value3);
+
+        value2.set(100);
+        assert_eq!(value2, value3);
+        assert_ne!(value1, value2);
+    }
+
+    #[test]
+    fn test_value_hash() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let value1 = super::Value::new(42);
+        let value2 = super::Value::new(42);
+        let value3 = super::Value::new(100);
+
+        let mut hasher1 = DefaultHasher::new();
+        value1.hash(&mut hasher1);
+        let hash1 = hasher1.finish();
+
+        let mut hasher2 = DefaultHasher::new();
+        value2.hash(&mut hasher2);
+        let hash2 = hasher2.finish();
+
+        let mut hasher3 = DefaultHasher::new();
+        value3.hash(&mut hasher3);
+        let hash3 = hasher3.finish();
+
+        assert_eq!(hash1, hash2, "Equal values should have equal hashes");
+        assert_ne!(
+            hash1, hash3,
+            "Different values should have different hashes"
+        );
+
+        // Test that hash changes when value changes
+        value2.set(100);
+        let mut hasher4 = DefaultHasher::new();
+        value2.hash(&mut hasher4);
+        let hash4 = hasher4.finish();
+
+        assert_eq!(
+            hash3, hash4,
+            "Value with same content should have same hash"
+        );
+        assert_ne!(
+            hash1, hash4,
+            "Value after update should have different hash"
+        );
+    }
+
+    #[test]
+    fn test_observer_display() {
+        let value = super::Value::new(42);
+        let observer = value.observe();
+        let display_str = format!("{}", observer);
+        assert!(display_str.starts_with("Observer(id:"));
     }
 }
