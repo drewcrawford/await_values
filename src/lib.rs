@@ -21,12 +21,16 @@ Our cast of characters includes:
 
 This library uses asynchronous functions and is executor-agnostic. It does not depend on tokio.
 
-The library uses lock-free atomic algorithms internally for high-performance concurrent access. The [`flip_card::FlipCard`] implementation provides a lock-free double-buffer that allows readers to never block, supporting up to 127 concurrent readers per slot with atomic synchronization.
+The library uses lock-free atomic algorithms internally for high-performance concurrent access. The internal `FlipCard` implementation provides a lock-free double-buffer that allows readers to never block, supporting up to 127 concurrent readers per slot with atomic synchronization.
 
 # Quick Start
 
+Both [`Observer`] and [`aggregate::AggregateObserver`] implement the `futures_core::Stream` trait,
+allowing them to be used with standard async stream combinators.
+
 ```
 use await_values::{Value, Observer};
+use futures_util::StreamExt;
 
 # test_executors::sleep_on(async {
 // Create an observable value
@@ -35,7 +39,7 @@ let value = Value::new(42);
 // Create an observer
 let mut observer = value.observe();
 
-// Get the current value
+// Get the current value (using Stream trait's next() method)
 assert_eq!(observer.next().await.unwrap(), 42);
 
 // Update the value
@@ -54,6 +58,7 @@ You can observe multiple values of different types using `AggregateObserver`:
 
 ```
 use await_values::{Value, aggregate::AggregateObserver};
+use futures_util::StreamExt;
 
 # test_executors::sleep_on(async {
 let temperature = Value::new(20.5);
@@ -65,14 +70,14 @@ aggregate.add_observer(status.observe());
 
 // Wait for initial values
 let index = aggregate.next().await;
-assert!(index == 0 || index == 1);
+assert!(index == Some(0) || index == Some(1));
 
 // Change a value
 temperature.set(25.0);
 
 // See which observer changed
 let changed_index = aggregate.next().await;
-assert_eq!(changed_index, 0); // temperature changed
+assert_eq!(changed_index, Some(0)); // temperature changed
 # });
 ```
 
@@ -106,8 +111,8 @@ use crate::flip_card::FlipCard;
 use atomic_waker::AtomicWaker;
 use std::fmt::{Debug, Display};
 use std::pin::Pin;
-use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Weak};
 use std::task::{Context, Poll, Waker};
 
@@ -304,8 +309,6 @@ impl<T: Clone> Drop for Value<T> {
     }
 }
 
-
-
 /// A handle to a value that can be used to observe when the value changes remotely.
 ///
 /// Observers have an internal 'state' that tracks the last observed value.
@@ -320,6 +323,7 @@ impl<T: Clone> Drop for Value<T> {
 ///
 /// ```
 /// use await_values::Value;
+/// use futures_util::StreamExt;
 ///
 /// # test_executors::sleep_on(async {
 /// let value = Value::new("initial");
@@ -371,11 +375,10 @@ impl<T: Clone> Clone for Observer<T> {
     }
 }
 
-
-
-
-
-impl<T> futures_core::Stream for Observer<T> where T: PartialEq + Clone + Unpin {
+impl<T> futures_core::Stream for Observer<T>
+where
+    T: PartialEq + Clone + Unpin,
+{
     type Item = T;
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.active_observation.register(cx.waker());
@@ -391,7 +394,7 @@ impl<T> Observer<T> {
     /// Creates a new observer for the given `Value`.
     ///
     /// The observer starts with no observed value, meaning the first call to
-    /// [`next`](Self::next) or [`current_value`](Self::current_value) will
+    /// `next()` (from the `Stream` trait) or [`current_value`](Self::current_value) will
     /// return the current value immediately.
     ///
     /// # Examples
@@ -429,9 +432,9 @@ impl<T> Observer<T> {
     /// This method always returns the current value from the underlying [`Value`],
     /// updating the observer's internal state. It does not wait for changes.
     ///
-    /// # Errors
+    /// # Returns
     ///
-    /// Returns [`ObserverError::Hungup`] if the underlying [`Value`] has been dropped.
+    /// Returns `None` if the underlying [`Value`] has been dropped.
     ///
     /// # Examples
     ///
@@ -460,7 +463,6 @@ impl<T> Observer<T> {
             None
         }
     }
-
 
     /// Returns the next value observed, but only if it is immediately available.
     ///
@@ -523,13 +525,14 @@ impl<T> Observer<T> {
     /// - The current value differs from the last observed value
     /// - The underlying [`Value`] has been dropped (hungup)
     ///
-    /// This method is useful for checking if calling [`next`](Self::next) would
+    /// This method is useful for checking if calling `next()` (from the `Stream` trait) would
     /// return immediately without waiting.
     ///
     /// # Examples
     ///
     /// ```
     /// use await_values::Value;
+    /// use futures_util::StreamExt;
     ///
     /// let value = Value::new("hello");
     /// let mut observer = value.observe();
@@ -609,8 +612,6 @@ impl<T: Clone> From<T> for Value<T> {
     }
 }
 
-
-
 impl<T: Clone> From<Value<T>> for Observer<T> {
     fn from(value: Value<T>) -> Self {
         value.observe()
@@ -619,8 +620,8 @@ impl<T: Clone> From<Value<T>> for Observer<T> {
 
 #[cfg(test)]
 mod tests {
-    use test_executors::async_test;
     use futures_util::StreamExt;
+    use test_executors::async_test;
 
     #[test]
     fn test_value() {

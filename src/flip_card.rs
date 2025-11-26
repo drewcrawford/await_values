@@ -21,72 +21,6 @@
 //! - An atomic "flip" operation swaps which side is front/back
 //! - This allows lock-free concurrent access without blocking
 //!
-//! # When to Use
-//!
-//! Use `FlipCard` when you need:
-//! - High-frequency reads with occasional writes
-//! - Lock-free read operations that never block
-//! - Consistent snapshots of data during reads
-//! - Single-writer, multiple-reader scenarios
-//!
-//! # Examples
-//!
-//! ## Basic Usage
-//!
-//! ```
-//! use await_values::flip_card::FlipCard;
-//!
-//! // Create a FlipCard with an initial value
-//! let flip_card = FlipCard::new(42);
-//!
-//! // Read the current value
-//! let value = flip_card.read();
-//! assert_eq!(value, 42);
-//!
-//! // Update the value atomically
-//! let old_value = flip_card.flip_to(100);
-//! assert_eq!(old_value, 42);
-//!
-//! // Read the new value
-//! assert_eq!(flip_card.read(), 100);
-//! ```
-//!
-//! ## Concurrent Access
-//!
-//! ```
-//! use await_values::flip_card::FlipCard;
-//! use std::sync::Arc;
-//! use std::thread;
-//!
-//! let flip_card = Arc::new(FlipCard::new(0));
-//!
-//! // Spawn multiple reader threads
-//! let readers: Vec<_> = (0..5).map(|i| {
-//!     let fc = Arc::clone(&flip_card);
-//!     thread::spawn(move || {
-//!         // Readers never block
-//!         let value = fc.read();
-//!         println!("Reader {} saw value: {}", i, value);
-//!         value
-//!     })
-//! }).collect();
-//!
-//! // Writer thread
-//! let writer = {
-//!     let fc = Arc::clone(&flip_card);
-//!     thread::spawn(move || {
-//!         // Writer atomically updates without blocking readers
-//!         fc.flip_to(42);
-//!     })
-//! };
-//!
-//! // Wait for all threads
-//! writer.join().unwrap();
-//! for reader in readers {
-//!     reader.join().unwrap();
-//! }
-//! ```
-//!
 //! # Internal Architecture
 //!
 //! The implementation uses:
@@ -270,50 +204,6 @@ impl<T> Slot<Option<T>> {
 /// `FlipCard<T>` is `Send` and `Sync` when `T: Send`, allowing it to be shared
 /// across threads safely. The internal synchronization ensures data consistency
 /// without requiring external locks.
-///
-/// # Examples
-///
-/// ## Single-threaded usage
-///
-/// ```
-/// use await_values::flip_card::FlipCard;
-///
-/// let flip_card = FlipCard::new("initial");
-/// assert_eq!(flip_card.read(), "initial");
-///
-/// let old = flip_card.flip_to("updated");
-/// assert_eq!(old, "initial");
-/// assert_eq!(flip_card.read(), "updated");
-/// ```
-///
-/// ## As a shared state container
-///
-/// ```
-/// use await_values::flip_card::FlipCard;
-/// use std::sync::Arc;
-///
-/// #[derive(Clone, Debug)]
-/// struct AppState {
-///     counter: i32,
-///     message: String,
-/// }
-///
-/// let state = Arc::new(FlipCard::new(AppState {
-///     counter: 0,
-///     message: "Hello".to_string(),
-/// }));
-///
-/// // Multiple threads can read without blocking
-/// let current = state.read();
-/// assert_eq!(current.counter, 0);
-///
-/// // Updates are atomic and return the previous state
-/// let old_state = state.flip_to(AppState {
-///     counter: 1,
-///     message: "Updated".to_string(),
-/// });
-/// assert_eq!(old_state.counter, 0);
-/// ```
 #[derive(Debug)]
 pub struct FlipCard<T> {
     /// First data slot.
@@ -338,20 +228,6 @@ impl<T> FlipCard<T> {
     /// The initial value is placed in slot 0, and slot 1 is initialized as empty.
     /// The FlipCard starts with slot 0 as the active read slot.
     ///
-    /// # Examples
-    ///
-    /// ```
-    /// use await_values::flip_card::FlipCard;
-    ///
-    /// // Create with a simple value
-    /// let card = FlipCard::new(42);
-    /// assert_eq!(card.read(), 42);
-    ///
-    /// // Create with a complex type
-    /// let card = FlipCard::new(vec![1, 2, 3]);
-    /// assert_eq!(card.read(), vec![1, 2, 3]);
-    /// ```
-    ///
     /// # Implementation Note
     ///
     /// Slot 0 starts as the active read slot with the initial value,
@@ -368,18 +244,6 @@ impl<T> FlipCard<T> {
 
 impl<T: Default> Default for FlipCard<T> {
     /// Creates a `FlipCard` with the default value of `T`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use await_values::flip_card::FlipCard;
-    ///
-    /// let card: FlipCard<i32> = FlipCard::default();
-    /// assert_eq!(card.read(), 0);
-    ///
-    /// let card: FlipCard<String> = FlipCard::default();
-    /// assert_eq!(card.read(), "");
-    /// ```
     fn default() -> Self {
         Self::new(T::default())
     }
@@ -390,23 +254,6 @@ impl<T: Clone> Clone for FlipCard<T> {
     ///
     /// The clone will have the same value as the original at the time of cloning,
     /// but the two FlipCards will be independent and can be updated separately.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use await_values::flip_card::FlipCard;
-    ///
-    /// let card1 = FlipCard::new(42);
-    /// let card2 = card1.clone();
-    ///
-    /// assert_eq!(card1.read(), 42);
-    /// assert_eq!(card2.read(), 42);
-    ///
-    /// // Updates to card1 don't affect card2
-    /// card1.flip_to(100);
-    /// assert_eq!(card1.read(), 100);
-    /// assert_eq!(card2.read(), 42);
-    /// ```
     fn clone(&self) -> Self {
         Self::new(self.read())
     }
@@ -416,18 +263,6 @@ impl<T> From<T> for FlipCard<T> {
     /// Creates a `FlipCard` from a value.
     ///
     /// This is equivalent to calling [`FlipCard::new`].
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use await_values::flip_card::FlipCard;
-    ///
-    /// let card: FlipCard<i32> = 42.into();
-    /// assert_eq!(card.read(), 42);
-    ///
-    /// let card = FlipCard::from("hello");
-    /// assert_eq!(card.read(), "hello");
-    /// ```
     fn from(value: T) -> Self {
         Self::new(value)
     }
@@ -443,49 +278,6 @@ impl<T> FlipCard<T> {
     /// # Returns
     ///
     /// The previous value that was stored in the FlipCard.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use await_values::flip_card::FlipCard;
-    ///
-    /// let card = FlipCard::new("hello");
-    ///
-    /// // Replace value and get the old one
-    /// let old = card.flip_to("world");
-    /// assert_eq!(old, "hello");
-    /// assert_eq!(card.read(), "world");
-    ///
-    /// // Chain multiple updates
-    /// let old = card.flip_to("foo");
-    /// assert_eq!(old, "world");
-    /// let old = card.flip_to("bar");
-    /// assert_eq!(old, "foo");
-    /// assert_eq!(card.read(), "bar");
-    /// ```
-    ///
-    /// ## Concurrent Updates
-    ///
-    /// ```
-    /// use await_values::flip_card::FlipCard;
-    /// use std::sync::Arc;
-    /// use std::thread;
-    ///
-    /// let card = Arc::new(FlipCard::new(0));
-    /// let card_clone = Arc::clone(&card);
-    ///
-    /// // Update from another thread
-    /// let handle = thread::spawn(move || {
-    ///     for i in 1..=5 {
-    ///         card_clone.flip_to(i);
-    ///     }
-    /// });
-    ///
-    /// handle.join().unwrap();
-    ///
-    /// // Final value should be 5
-    /// assert_eq!(card.read(), 5);
-    /// ```
     ///
     /// # Performance
     ///
@@ -529,44 +321,6 @@ impl<T> FlipCard<T> {
     /// This method reads from the currently active slot. It may briefly spin
     /// if the slot is being written to, but readers never block writers and
     /// vice versa due to the double-buffering design.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use await_values::flip_card::FlipCard;
-    ///
-    /// let card = FlipCard::new(vec![1, 2, 3]);
-    ///
-    /// // Read returns a clone of the current value
-    /// let value = card.read();
-    /// assert_eq!(value, vec![1, 2, 3]);
-    ///
-    /// // Multiple reads return the same value until flip_to is called
-    /// assert_eq!(card.read(), card.read());
-    /// ```
-    ///
-    /// ## Concurrent Reads
-    ///
-    /// ```
-    /// use await_values::flip_card::FlipCard;
-    /// use std::sync::Arc;
-    /// use std::thread;
-    ///
-    /// let card = Arc::new(FlipCard::new("shared"));
-    ///
-    /// // Multiple threads can read simultaneously without blocking
-    /// let handles: Vec<_> = (0..10).map(|_| {
-    ///     let card = Arc::clone(&card);
-    ///     thread::spawn(move || {
-    ///         card.read()
-    ///     })
-    /// }).collect();
-    ///
-    /// // All threads see the same value
-    /// for handle in handles {
-    ///     assert_eq!(handle.join().unwrap(), "shared");
-    /// }
-    /// ```
     ///
     /// # Panics
     ///

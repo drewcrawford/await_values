@@ -47,6 +47,7 @@ where
 /// ```
 /// # fn setup() -> (await_values::aggregate::AggregateObserver, await_values::Value<i32>, await_values::Value<&'static str>) {
 /// use await_values::{Value, aggregate::AggregateObserver};
+/// use futures_util::StreamExt;
 ///
 /// // Create values of different types
 /// let int_value = Value::new(42);
@@ -60,17 +61,18 @@ where
 /// # }
 ///
 /// # test_executors::sleep_on(async {
+/// # use futures_util::StreamExt;
 /// # let (mut aggregate, int_value, str_value) = setup();
 /// // Get initial values
 /// let index = aggregate.next().await;
-/// assert!(index == 0 || index == 1);
+/// assert!(index == Some(0) || index == Some(1));
 ///
 /// // Change one of the values
 /// int_value.set(100);
 ///
 /// // Wait for the change
 /// let changed_index = aggregate.next().await;
-/// assert_eq!(changed_index, 0); // The integer value changed
+/// assert_eq!(changed_index, Some(0)); // The integer value changed
 /// # });
 /// ```
 #[derive(Debug)]
@@ -116,11 +118,10 @@ impl AggregateObserver {
         self.observers.push(Box::new(observer));
     }
 
-
     /// Checks if any observer has a new value available without blocking.
     ///
     /// This method does not consume the value or change any internal state.
-    /// It's useful for checking if calling [`next`](Self::next) would return immediately.
+    /// It's useful for checking if calling `next()` (from the `Stream` trait) would return immediately.
     ///
     /// # Returns
     ///
@@ -141,6 +142,7 @@ impl AggregateObserver {
     /// assert!(aggregate.is_dirty());
     ///
     /// # test_executors::sleep_on(async {
+    /// # use futures_util::StreamExt;
     /// // After observing the value, it's no longer dirty
     /// aggregate.next().await;
     /// assert!(!aggregate.is_dirty());
@@ -167,7 +169,6 @@ impl futures_core::Stream for AggregateObserver {
         Poll::Pending
     }
 }
-
 
 //boilerplates
 
@@ -212,9 +213,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use futures_util::StreamExt;
     use super::AggregateObserver;
     use crate::Value;
+    use futures_util::StreamExt;
     use test_executors::async_test;
 
     #[async_test]
