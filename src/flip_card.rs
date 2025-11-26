@@ -364,6 +364,76 @@ impl<T> FlipCard<T> {
             read_data_0: AtomicBool::new(true), // Start with data0 being read
         }
     }
+}
+
+impl<T: Default> Default for FlipCard<T> {
+    /// Creates a `FlipCard` with the default value of `T`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use await_values::flip_card::FlipCard;
+    ///
+    /// let card: FlipCard<i32> = FlipCard::default();
+    /// assert_eq!(card.read(), 0);
+    ///
+    /// let card: FlipCard<String> = FlipCard::default();
+    /// assert_eq!(card.read(), "");
+    /// ```
+    fn default() -> Self {
+        Self::new(T::default())
+    }
+}
+
+impl<T: Clone> Clone for FlipCard<T> {
+    /// Creates a clone of the `FlipCard` with the current value.
+    ///
+    /// The clone will have the same value as the original at the time of cloning,
+    /// but the two FlipCards will be independent and can be updated separately.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use await_values::flip_card::FlipCard;
+    ///
+    /// let card1 = FlipCard::new(42);
+    /// let card2 = card1.clone();
+    ///
+    /// assert_eq!(card1.read(), 42);
+    /// assert_eq!(card2.read(), 42);
+    ///
+    /// // Updates to card1 don't affect card2
+    /// card1.flip_to(100);
+    /// assert_eq!(card1.read(), 100);
+    /// assert_eq!(card2.read(), 42);
+    /// ```
+    fn clone(&self) -> Self {
+        Self::new(self.read())
+    }
+}
+
+impl<T> From<T> for FlipCard<T> {
+    /// Creates a `FlipCard` from a value.
+    ///
+    /// This is equivalent to calling [`FlipCard::new`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use await_values::flip_card::FlipCard;
+    ///
+    /// let card: FlipCard<i32> = 42.into();
+    /// assert_eq!(card.read(), 42);
+    ///
+    /// let card = FlipCard::from("hello");
+    /// assert_eq!(card.read(), "hello");
+    /// ```
+    fn from(value: T) -> Self {
+        Self::new(value)
+    }
+}
+
+impl<T> FlipCard<T> {
     /// Atomically replaces the current value with a new one.
     ///
     /// This method writes the new value to the inactive slot, then atomically
@@ -522,22 +592,18 @@ impl<T> FlipCard<T> {
         loop {
             if self.read_data_0.load(Ordering::Acquire) {
                 // Read from slot 0
-                if let Some(data) = self.data0.try_read() {
-                    if let Some(val) = data {
-                        return val;
-                    }
-                    // If we got None, it means the slot was cleared concurrently.
-                    // This implies a writer flipped to slot 1 and cleared slot 0.
-                    // We should retry the loop to pick up the new active slot.
+                if let Some(Some(val)) = self.data0.try_read() {
+                    return val;
                 }
+                // If we got None (either from try_read() or from inner Option), it means the slot was cleared concurrently.
+                // This implies a writer flipped to slot 1 and cleared slot 0.
+                // We should retry the loop to pick up the new active slot.
             } else {
                 // Read from slot 1
-                if let Some(data) = self.data1.try_read() {
-                    if let Some(val) = data {
-                        return val;
-                    }
-                    // Same as above, slot was cleared concurrently. Retry.
+                if let Some(Some(val)) = self.data1.try_read() {
+                    return val;
                 }
+                // Same as above, slot was cleared concurrently. Retry.
             }
             std::hint::spin_loop(); // Wait for data to be available
         }
