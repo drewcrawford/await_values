@@ -21,3 +21,7 @@ futures-core = "0.3.31"
 [dev-dependencies]
 test_executors = "0.3.5"
 futures-util = "0.3"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+wasm_thread = "0.3"
