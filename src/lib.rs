@@ -100,7 +100,7 @@ assert_eq!(value.get(), 42);
 */
 
 pub mod aggregate;
-pub mod flip_card;
+mod flip_card;
 
 use crate::flip_card::FlipCard;
 use atomic_waker::AtomicWaker;
@@ -572,20 +572,20 @@ impl<T> Observer<T> {
             if let Some(last) = &self.observed {
                 if &observe == last {
                     // If the value is the same as the last observed value, we return an error
-                    return Err(());
+                    Err(())
                 } else {
                     // If the value is different, we update the observed value and return it
                     self.observed = Some(observe.clone());
-                    return Ok(Ok(observe));
+                    Ok(Ok(observe))
                 }
             } else {
                 // If this is the first observation, we set the observed value and return it
                 self.observed = Some(observe.clone());
-                return Ok(Ok(observe));
+                Ok(Ok(observe))
             }
         } else {
             // If the value is None, it means the value has been dropped (hungup)
-            return Ok(Err(ObserverError::Hungup));
+            Ok(Err(ObserverError::Hungup))
         }
     }
 
