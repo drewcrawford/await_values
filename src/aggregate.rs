@@ -6,7 +6,8 @@
 
 use crate::Observer;
 use std::fmt::Debug;
-use std::task::{Poll, Waker};
+use std::pin::Pin;
+use std::task::{Context, Poll, Waker};
 
 trait ErasedObserver: Debug + Send {
     fn clone_box(&self) -> Box<dyn ErasedObserver>;
@@ -115,46 +116,6 @@ impl AggregateObserver {
         self.observers.push(Box::new(observer));
     }
 
-    /// Waits for the next value change from any of the observers and returns its index.
-    ///
-    /// This method will:
-    /// - Return immediately if any observer has an unobserved value change
-    /// - Otherwise, wait until any observer's value changes
-    /// - Return the index (0-based) of the first observer that has a new value
-    ///
-    /// # Returns
-    ///
-    /// The index of the observer that changed. Indices correspond to the order in which
-    /// observers were added via [`add_observer`](Self::add_observer).
-    ///
-    /// # Notes
-    ///
-    /// - If multiple observers have changed, only the index of the first one is returned
-    /// - The actual value cannot be retrieved through the aggregate; you'll need to keep
-    ///   a separate reference to the original [`Value`](crate::Value) or [`Observer`]
-    /// - This method handles "repeat" values correctly - if an observer is set to the same
-    ///   value multiple times, it won't be considered as having a new value
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use await_values::{Value, aggregate::AggregateObserver};
-    /// # test_executors::sleep_on(async {
-    /// let value1 = Value::new(1);
-    /// let value2 = Value::new("hello");
-    ///
-    /// let mut aggregate = AggregateObserver::new();
-    /// aggregate.add_observer(value1.observe());
-    /// aggregate.add_observer(value2.observe());
-    ///
-    /// // Wait for either value to change
-    /// let changed_index = aggregate.next().await;
-    /// println!("Observer {} changed", changed_index);
-    /// # });
-    /// ```
-    pub fn next(&mut self) -> impl Future<Output = usize> {
-        AggregateObservation { observer: self }
-    }
 
     /// Checks if any observer has a new value available without blocking.
     ///
@@ -194,26 +155,19 @@ impl AggregateObserver {
     }
 }
 
-struct AggregateObservation<'a> {
-    observer: &'a mut AggregateObserver,
-}
-
-impl<'a> Future for AggregateObservation<'a> {
-    type Output = usize;
-
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        for (o, observer) in self.observer.observers.iter_mut().enumerate() {
+impl futures_core::Stream for AggregateObserver {
+    type Item = usize;
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        for (o, observer) in self.observers.iter_mut().enumerate() {
             observer.register(cx.waker());
             if observer.observe_if_distinct() {
-                return Poll::Ready(o); // Return the index of the first observer that is ready
+                return Poll::Ready(Some(o)); // Return the index of the first observer that is ready
             }
         }
         Poll::Pending
     }
 }
+
 
 //boilerplates
 
@@ -258,6 +212,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use futures_util::StreamExt;
     use super::AggregateObserver;
     use crate::Value;
     use test_executors::async_test;
@@ -290,7 +245,7 @@ mod tests {
         let mut o = AggregateObserver::new();
         o.add_observer(v.observe());
         let o1 = o.next().await;
-        assert_eq!(o1, 0);
+        assert_eq!(o1, Some(0));
 
         std::thread::spawn(move || {
             let v = v;
@@ -304,11 +259,12 @@ mod tests {
         });
 
         let begin = std::time::Instant::now();
+
         let o2 = o.next().await;
         assert!(
             begin.elapsed().as_millis() > 49,
             "Should have waited for the next value"
         );
-        assert_eq!(o2, 0);
+        assert_eq!(o2, Some(0));
     }
 }

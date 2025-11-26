@@ -17,5 +17,7 @@ rust-version = "1.85.1"
 atomic-waker = "~1"
 treiber_stack = "1.1"
 wasm_safe_mutex = "0.1.1"
+futures-core = "0.3.31"
 [dev-dependencies]
 test_executors = "0.3.5"
+futures-util = "0.3"

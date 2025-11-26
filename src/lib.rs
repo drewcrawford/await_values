@@ -100,12 +100,11 @@ assert_eq!(value.get(), 42);
 */
 
 pub mod aggregate;
-mod flip_card;
+pub(crate) mod flip_card;
 
 use crate::flip_card::FlipCard;
 use atomic_waker::AtomicWaker;
 use std::fmt::{Debug, Display};
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::AtomicU64;
@@ -305,16 +304,7 @@ impl<T: Clone> Drop for Value<T> {
     }
 }
 
-/// Errors that can occur when observing values.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum ObserverError {
-    /// Indicates that the value has been hung up, meaning the value is no longer available
-    /// and no updates will be made.
-    ///
-    /// This occurs when the [`Value`] is dropped while observers still exist.
-    Hungup,
-}
+
 
 /// A handle to a value that can be used to observe when the value changes remotely.
 ///
@@ -381,53 +371,16 @@ impl<T: Clone> Clone for Observer<T> {
     }
 }
 
-/// A future that resolves when the observed value changes.
-///
-/// This type is returned by [`Observer::next`] and implements [`Future`].
-/// It represents an in-progress observation that will complete when the
-/// underlying value changes to something different from the last observed value.
-///
-/// # Implementation Details
-///
-/// This struct borrows the observer mutably for the duration of the observation,
-/// ensuring exclusive access to the observer's internal state during the wait.
-///
-/// You typically won't construct this type directly; instead, use [`Observer::next`]:
-///
-/// ```
-/// use await_values::Value;
-///
-/// # test_executors::sleep_on(async {
-/// let value = Value::new(42);
-/// let mut observer = value.observe();
-///
-/// // This creates an Observation future
-/// let result = observer.next().await;
-/// assert_eq!(result.unwrap(), 42);
-/// # });
-/// ```
-pub struct Observation<'a, T> {
-    observer: &'a mut Observer<T>,
-}
 
 
-impl<'a, T: std::fmt::Debug> std::fmt::Debug for Observation<'a, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Observation")
-            .field("observer", &self.observer)
-            .finish()
-    }
-}
 
-impl<'a, T> Future for Observation<'a, T>
-where
-    T: PartialEq + Clone,
-{
-    type Output = Result<T, ObserverError>;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.observer.active_observation.register(cx.waker());
+
+impl<T> futures_core::Stream for Observer<T> where T: PartialEq + Clone + Unpin {
+    type Item = T;
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.active_observation.register(cx.waker());
         // Check if the observer has a distinct value available
-        match self.get_mut().observer.next_when_immediately_available() {
+        match self.get_mut().next_when_immediately_available() {
             Ok(v) => Poll::Ready(v),
             Err(_) => Poll::Pending,
         }
@@ -495,61 +448,20 @@ impl<T> Observer<T> {
     /// value.set(vec![4, 5, 6]);
     /// assert_eq!(observer.current_value().unwrap(), vec![4, 5, 6]);
     /// ```
-    pub fn current_value(&mut self) -> Result<T, ObserverError>
+    pub fn current_value(&mut self) -> Option<T>
     where
         T: Clone,
     {
         let observed = self.shared.value.read();
         if let Some(obs) = observed {
             self.observed = Some(obs.clone());
-            Ok(obs)
+            Some(obs)
         } else {
-            Err(ObserverError::Hungup)
+            None
         }
     }
 
-    /// Returns the next value observed.
-    ///
-    /// This method implements the core observation logic:
-    /// * If no values have been observed yet, it will return the current value immediately.
-    /// * If the value has changed since the last observation, it returns the new value immediately.
-    /// * If the value hasn't changed, it waits until the value changes, then returns the new value.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ObserverError::Hungup`] if the underlying [`Value`] has been dropped.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use await_values::Value;
-    /// use std::thread;
-    /// use std::time::Duration;
-    ///
-    /// # test_executors::sleep_on(async {
-    /// let value = Value::new(1);
-    /// let mut observer = value.observe();
-    ///
-    /// // First call returns immediately
-    /// assert_eq!(observer.next().await.unwrap(), 1);
-    ///
-    /// // Spawn a thread to update the value
-    /// thread::spawn(move || {
-    ///     thread::sleep(Duration::from_millis(10));
-    ///     value.set(2);
-    ///     # std::mem::forget(value); // Prevent hangup in test
-    /// });
-    ///
-    /// // This call waits for the change
-    /// assert_eq!(observer.next().await.unwrap(), 2);
-    /// # });
-    /// ```
-    pub fn next(&mut self) -> impl Future<Output = Result<T, ObserverError>>
-    where
-        T: Clone + PartialEq,
-    {
-        Observation { observer: self }
-    }
+
     /// Returns the next value observed, but only if it is immediately available.
     ///
     /// For this purpose, the next value is considered immediately available if:
@@ -560,9 +472,9 @@ impl<T> Observer<T> {
     /// # Returns
     ///
     /// - `Ok(Ok(T))` - A new value is available
-    /// - `Ok(Err(ObserverError::Hungup))` - The value has been dropped
+    /// - `Ok(Ok(None))` - The value has been dropped
     /// - `Err(()))` - No new value is available.
-    fn next_when_immediately_available(&mut self) -> Result<Result<T, ObserverError>, ()>
+    fn next_when_immediately_available(&mut self) -> Result<Option<T>, ()>
     where
         T: PartialEq + Clone,
     {
@@ -576,16 +488,16 @@ impl<T> Observer<T> {
                 } else {
                     // If the value is different, we update the observed value and return it
                     self.observed = Some(observe.clone());
-                    Ok(Ok(observe))
+                    Ok(Some(observe))
                 }
             } else {
                 // If this is the first observation, we set the observed value and return it
                 self.observed = Some(observe.clone());
-                Ok(Ok(observe))
+                Ok(Some(observe))
             }
         } else {
             // If the value is None, it means the value has been dropped (hungup)
-            Ok(Err(ObserverError::Hungup))
+            Ok(None)
         }
     }
 
@@ -697,14 +609,7 @@ impl<T: Clone> From<T> for Value<T> {
     }
 }
 
-impl Display for ObserverError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ObserverError::Hungup => write!(f, "Observer hung up"),
-        }
-    }
-}
-impl std::error::Error for ObserverError {}
+
 
 impl<T: Clone> From<Value<T>> for Observer<T> {
     fn from(value: Value<T>) -> Self {
@@ -715,6 +620,7 @@ impl<T: Clone> From<Value<T>> for Observer<T> {
 #[cfg(test)]
 mod tests {
     use test_executors::async_test;
+    use futures_util::StreamExt;
 
     #[test]
     fn test_value() {
@@ -771,12 +677,12 @@ mod tests {
 
         // Wait for the next value, which should return an error since the value is dropped
         let result = observer.next().await;
-        assert!(result.is_err());
+        assert!(result.is_none());
 
         //should work again back to back
         let result2 = observer.next().await;
         assert!(
-            result2.is_err(),
+            result2.is_none(),
             "Expected error after value drop, got: {:?}",
             result2
         );
