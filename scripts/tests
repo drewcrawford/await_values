@@ -3,4 +3,4 @@ set -e
 RUSTFLAGS="-D warnings" cargo test
 
 CARGO_CONFIG_RUSTFLAGS=$(cargo +nightly -Z unstable-options config get 'target.cfg(target_arch="wasm32").rustflags' --format json 2>/dev/null | jq -r '.target."cfg(target_arch=\"wasm32\")".rustflags | join(" ")')
-RUSTFLAGS="CARGO_CONFIG_RUSTFLAGS -D warnings" cargo +nightly test --target=wasm32-unknown-unknown
+RUSTFLAGS="$CARGO_CONFIG_RUSTFLAGS -D warnings" cargo +nightly test --target=wasm32-unknown-unknown
