@@ -7,7 +7,7 @@ echo "check"
 scripts/check
 echo "clippy"
 scripts/clippy
-echo "docs"
-scripts/docs
 echo "tests"
 scripts/tests
+echo "docs"
+scripts/docs

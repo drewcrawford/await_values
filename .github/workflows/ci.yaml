@@ -63,8 +63,8 @@ jobs:
       - name: clippy
         run: scripts/${{ matrix.target }}/clippy
 
-      - name: docs
-        run: scripts/${{ matrix.target }}/docs
-
       - name: tests
         run: scripts/${{ matrix.target }}/tests
+
+      - name: docs
+        run: scripts/${{ matrix.target }}/docs
