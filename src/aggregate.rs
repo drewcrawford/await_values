@@ -23,8 +23,6 @@ where
         Box::new(self.clone())
     }
 
-
-
     fn observe_if_distinct(&mut self) -> bool {
         self.observe_if_distinct()
     }
@@ -154,10 +152,8 @@ impl AggregateObserver {
     /// println!("Observer {} changed", changed_index);
     /// # });
     /// ```
-    pub fn next(&mut self) -> impl Future<Output=usize> {
-        AggregateObservation {
-            observer: self,
-        }
+    pub fn next(&mut self) -> impl Future<Output = usize> {
+        AggregateObservation { observer: self }
     }
 
     /// Checks if any observer has a new value available without blocking.
@@ -205,8 +201,11 @@ struct AggregateObservation<'a> {
 impl<'a> Future for AggregateObservation<'a> {
     type Output = usize;
 
-    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
-        for (o,observer) in self.observer.observers.iter_mut().enumerate() {
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        for (o, observer) in self.observer.observers.iter_mut().enumerate() {
             observer.register(cx.waker());
             if observer.observe_if_distinct() {
                 return Poll::Ready(o); // Return the index of the first observer that is ready
