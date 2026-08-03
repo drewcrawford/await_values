@@ -279,11 +279,8 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     use std::thread;
     #[cfg(target_arch = "wasm32")]
-    use wasm_thread as thread;
+    use wasm_lite_std as thread;
 
-    #[cfg(not(target_arch = "wasm32"))]
-    use std::time::Instant;
-    #[cfg(target_arch = "wasm32")]
     use wasm_lite_std::time::Instant;
 
     #[async_test]
