@@ -219,7 +219,7 @@ pub struct FlipCard<T> {
     /// back slot and both `take` the front slot, so the second `take` finds
     /// `None` and violates the "front slot always holds a value" invariant.
     /// Readers never touch this lock.
-    write_lock: wasm_safe_mutex::Mutex<()>,
+    write_lock: wasm_lite_std::Mutex<()>,
 }
 
 // SAFETY: FlipCard<T> can be sent between threads if T can be sent.
@@ -246,7 +246,7 @@ impl<T> FlipCard<T> {
             data0: Slot::new(Some(data0)),
             data1: Slot::new(None),             // Initialize with zeroed data
             read_data_0: AtomicBool::new(true), // Start with data0 being read
-            write_lock: wasm_safe_mutex::Mutex::new(()),
+            write_lock: wasm_lite_std::Mutex::new(()),
         }
     }
 }
