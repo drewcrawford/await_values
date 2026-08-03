@@ -46,8 +46,8 @@
 //!
 //! # Performance Characteristics
 //!
-//! - **Read operations**: O(1) with potential brief spinning during concurrent writes
-//! - **Write operations**: O(1) with atomic flip
+//! - **Read operations**: O(1) and lock-free, with potential brief spinning during concurrent writes
+//! - **Write operations**: O(1) with atomic flip; concurrent writers serialize on an internal mutex
 //! - **Memory overhead**: 2x the size of stored value plus atomic bookkeeping
 //! - **Contention handling**: Lock-free with exponential backoff via spin loops
 
@@ -196,7 +196,7 @@ impl<T> Slot<Option<T>> {
 /// # Performance Characteristics
 ///
 /// - **Reads**: Lock-free with potential spinning if slot is being written
-/// - **Writes**: Lock-free with atomic flip operation
+/// - **Writes**: Atomic flip; concurrent writers serialize on an internal mutex
 /// - **Memory**: Uses 2x the memory of a single value
 /// - **Cache coherence**: Optimized for single-writer scenarios
 ///
@@ -213,6 +213,13 @@ pub struct FlipCard<T> {
     data1: Slot<Option<T>>,
     /// Indicates which slot readers should use (true = slot 0, false = slot 1).
     read_data_0: AtomicBool,
+    /// Serializes writers.
+    ///
+    /// Two concurrent `flip_to` calls could otherwise both write into the same
+    /// back slot and both `take` the front slot, so the second `take` finds
+    /// `None` and violates the "front slot always holds a value" invariant.
+    /// Readers never touch this lock.
+    write_lock: wasm_safe_mutex::Mutex<()>,
 }
 
 // SAFETY: FlipCard<T> can be sent between threads if T can be sent.
@@ -239,6 +246,7 @@ impl<T> FlipCard<T> {
             data0: Slot::new(Some(data0)),
             data1: Slot::new(None),             // Initialize with zeroed data
             read_data_0: AtomicBool::new(true), // Start with data0 being read
+            write_lock: wasm_safe_mutex::Mutex::new(()),
         }
     }
 }
@@ -297,6 +305,7 @@ impl<T> FlipCard<T> {
         T: Clone,
     {
         let opt_data = Some(data);
+        let _guard = self.write_lock.lock_sync();
         loop {
             let read_0 = self.read_data_0.load(Ordering::Relaxed);
             if read_0 {
@@ -546,6 +555,29 @@ mod tests {
         let new = card.read();
         assert_eq!(new.name, "updated");
         assert_eq!(new.value, 42);
+    }
+
+    /// Test that concurrent writers don't panic or lose the slot invariant.
+    #[test]
+    fn test_concurrent_writers() {
+        let card = Arc::new(FlipCard::new(0u64));
+        let barrier = Arc::new(Barrier::new(4));
+        let writers: Vec<_> = (0..4)
+            .map(|t| {
+                let card = Arc::clone(&card);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    for i in 0..100_000u64 {
+                        card.flip_to(t * 1_000_000 + i);
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        card.read();
     }
 
     #[test]

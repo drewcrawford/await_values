@@ -21,7 +21,7 @@ Our cast of characters includes:
 
 This library uses asynchronous functions and is executor-agnostic. It does not depend on tokio.
 
-The library uses lock-free atomic algorithms internally for high-performance concurrent access. The internal `FlipCard` implementation provides a lock-free double-buffer that allows readers to never block, supporting up to 127 concurrent readers per slot with atomic synchronization.
+The library uses atomic algorithms internally for high-performance concurrent access. The internal `FlipCard` implementation provides a double-buffer with lock-free reads that never block, supporting up to 127 concurrent readers per slot with atomic synchronization. Concurrent writers serialize on an internal mutex.
 
 # Quick Start
 
