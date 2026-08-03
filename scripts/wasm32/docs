@@ -1,3 +1,7 @@
 #!/bin/bash
 set -e
-RUSTDOCFLAGS="-D warnings" cargo +nightly doc --target=wasm32-unknown-unknown
+source "$(dirname "$0")/_env"
+# rustdoc must see the same atomics/link flags the dependencies were built
+# with, or type-checking docs against those rmetas fails (e.g. Sync errors on
+# statics in js-sys under shared memory).
+RUSTFLAGS="$WASM32_RUSTFLAGS" RUSTDOCFLAGS="$WASM32_RUSTFLAGS -D warnings" cargo +nightly doc --target=wasm32-unknown-unknown
