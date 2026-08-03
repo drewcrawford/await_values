@@ -4,14 +4,14 @@
 //! This module provides [`AggregateObserver`], which can hold multiple observers of different types
 //! and wait for any of them to produce a new value.
 
-use crate::Observer;
+use crate::{Observation, Observer};
 use std::fmt::{Debug, Display};
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
 trait ErasedObserver: Debug + Send {
     fn clone_box(&self) -> Box<dyn ErasedObserver>;
-    fn observe_if_distinct(&mut self) -> bool;
+    fn observe_if_distinct(&mut self) -> Observation;
     fn register(&self, waker: &Waker);
 
     fn is_dirty(&self) -> bool;
@@ -24,7 +24,7 @@ where
         Box::new(self.clone())
     }
 
-    fn observe_if_distinct(&mut self) -> bool {
+    fn observe_if_distinct(&mut self) -> Observation {
         self.observe_if_distinct()
     }
     fn register(&self, waker: &Waker) {
@@ -36,11 +36,30 @@ where
     }
 }
 
+/// An observer together with aggregate-level bookkeeping.
+#[derive(Debug)]
+struct Entry {
+    observer: Box<dyn ErasedObserver>,
+    /// Whether this observer's hangup has already been yielded to the consumer.
+    ///
+    /// A hung-up observer stays "dirty" forever; without this flag the stream
+    /// would yield its index on every poll and never make progress on (or past)
+    /// the other observers.
+    hangup_reported: bool,
+}
+
 /// An aggregate, heterogeneous observer that can hold multiple observers of different types.
 ///
 /// `AggregateObserver` allows you to wait for changes on multiple [`Observer`]s simultaneously,
 /// even when they observe values of different types. This is useful when you need to react to
 /// changes from multiple sources without knowing which one will change first.
+///
+/// # Hangup Semantics
+///
+/// When an observed [`Value`](crate::Value) is dropped, the aggregate yields that observer's
+/// index one final time, after which the observer is excluded from further polling. Once every
+/// observer has hung up (or if the aggregate contains no observers), the stream ends and
+/// `next()` returns `None`.
 ///
 /// # Examples
 ///
@@ -77,7 +96,7 @@ where
 /// ```
 #[derive(Debug)]
 pub struct AggregateObserver {
-    observers: Vec<Box<dyn ErasedObserver>>,
+    observers: Vec<Entry>,
 }
 
 impl AggregateObserver {
@@ -115,7 +134,10 @@ impl AggregateObserver {
         T: 'static + PartialEq + Clone + Debug + Send,
     {
         // Store the observer as a boxed trait object to erase the type
-        self.observers.push(Box::new(observer));
+        self.observers.push(Entry {
+            observer: Box::new(observer),
+            hangup_reported: false,
+        });
     }
 
     /// Checks if any observer has a new value available without blocking.
@@ -125,8 +147,10 @@ impl AggregateObserver {
     ///
     /// # Returns
     ///
-    /// - `true` if at least one observer has a new value ready or is hung up
-    /// - `false` if all observers are up-to-date
+    /// - `true` if at least one observer has a new value ready or has hung up
+    ///   without the hangup having been reported yet
+    /// - `false` if all observers are up-to-date (or have already reported
+    ///   their hangup)
     ///
     /// # Examples
     ///
@@ -153,20 +177,41 @@ impl AggregateObserver {
     /// # });
     /// ```
     pub fn is_dirty(&self) -> bool {
-        self.observers.iter().any(|e| e.is_dirty())
+        self.observers
+            .iter()
+            .any(|e| !e.hangup_reported && e.observer.is_dirty())
     }
 }
 
 impl futures_core::Stream for AggregateObserver {
     type Item = usize;
+    /// Polls all observers, yielding the index of the first one with a new value.
+    ///
+    /// A hung-up observer (its [`Value`](crate::Value) was dropped) yields its
+    /// index exactly once, after which it is excluded from further polling.
+    /// When every observer has hung up and been reported (including the case of
+    /// an aggregate with no observers), the stream ends by returning `None`.
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        for (o, observer) in self.observers.iter_mut().enumerate() {
-            observer.register(cx.waker());
-            if observer.observe_if_distinct() {
-                return Poll::Ready(Some(o)); // Return the index of the first observer that is ready
+        let mut live = false;
+        for (o, entry) in self.observers.iter_mut().enumerate() {
+            if entry.hangup_reported {
+                continue;
+            }
+            entry.observer.register(cx.waker());
+            match entry.observer.observe_if_distinct() {
+                Observation::NewValue => return Poll::Ready(Some(o)),
+                Observation::Hangup => {
+                    entry.hangup_reported = true;
+                    return Poll::Ready(Some(o));
+                }
+                Observation::Unchanged => live = true,
             }
         }
-        Poll::Pending
+        if live {
+            Poll::Pending
+        } else {
+            Poll::Ready(None)
+        }
     }
 }
 
@@ -178,7 +223,14 @@ impl futures_core::Stream for AggregateObserver {
 impl Clone for AggregateObserver {
     fn clone(&self) -> Self {
         Self {
-            observers: self.observers.iter().map(|obs| obs.clone_box()).collect(),
+            observers: self
+                .observers
+                .iter()
+                .map(|e| Entry {
+                    observer: e.observer.clone_box(),
+                    hangup_reported: e.hangup_reported,
+                })
+                .collect(),
         }
     }
 }
@@ -283,6 +335,39 @@ mod tests {
             "Should have waited for the next value"
         );
         assert_eq!(o2, Some(0));
+    }
+
+    #[async_test]
+    async fn test_hangup_reports_once_then_ends() {
+        let value = Value::new(1);
+        let value2 = Value::new(2);
+        let mut o = AggregateObserver::new();
+        o.add_observer(value.observe());
+        o.add_observer(value2.observe());
+
+        // Consume initial values
+        assert_eq!(o.next().await, Some(0));
+        assert_eq!(o.next().await, Some(1));
+
+        // Dropping the first value yields its index exactly once...
+        drop(value);
+        assert_eq!(o.next().await, Some(0));
+
+        // ...and must not starve the second observer afterwards.
+        value2.set(20);
+        assert_eq!(o.next().await, Some(1));
+
+        // Once every observer has hung up, the stream ends.
+        drop(value2);
+        assert_eq!(o.next().await, Some(1));
+        assert_eq!(o.next().await, None);
+        assert!(!o.is_dirty());
+    }
+
+    #[async_test]
+    async fn test_empty_aggregate_ends() {
+        let mut o = AggregateObserver::new();
+        assert_eq!(o.next().await, None);
     }
 
     #[test]

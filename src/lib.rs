@@ -118,6 +118,17 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Weak};
 use std::task::{Context, Poll, Waker};
 
+/// Result of a non-blocking observation attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Observation {
+    /// A new, distinct value was observed.
+    NewValue,
+    /// The underlying [`Value`] has been dropped.
+    Hangup,
+    /// No new value is available.
+    Unchanged,
+}
+
 struct ActiveObservation {
     id: u64,
     notify: AtomicWaker,
@@ -475,9 +486,9 @@ impl<T> Observer<T> {
     ///
     /// # Returns
     ///
-    /// - `Ok(Ok(T))` - A new value is available
-    /// - `Ok(Ok(None))` - The value has been dropped
-    /// - `Err(()))` - No new value is available.
+    /// - `Ok(Some(T))` - A new value is available
+    /// - `Ok(None)` - The value has been dropped
+    /// - `Err(())` - No new value is available.
     fn next_when_immediately_available(&mut self) -> Result<Option<T>, ()>
     where
         T: PartialEq + Clone,
@@ -509,14 +520,14 @@ impl<T> Observer<T> {
     ///
     /// This is an internal method that checks if a new, different value can be read.
     /// It updates the observer's state if a new value is available.
-    pub(crate) fn observe_if_distinct(&mut self) -> bool
+    pub(crate) fn observe_if_distinct(&mut self) -> Observation
     where
         T: PartialEq + Clone,
     {
-        let r = self.next_when_immediately_available();
-        match r {
-            Ok(..) => true,  // Value is available and distinct
-            Err(_) => false, // No value available
+        match self.next_when_immediately_available() {
+            Ok(Some(_)) => Observation::NewValue,
+            Ok(None) => Observation::Hangup,
+            Err(()) => Observation::Unchanged,
         }
     }
 
