@@ -18,7 +18,7 @@ trait ErasedObserver: Debug + Send {
 }
 impl<T> ErasedObserver for Observer<T>
 where
-    T: PartialEq + Clone + Debug + Send + 'static,
+    T: PartialEq + Clone + Debug + Send + Sync + 'static,
 {
     fn clone_box(&self) -> Box<dyn ErasedObserver> {
         Box::new(self.clone())
@@ -79,7 +79,7 @@ struct Entry {
 /// # (aggregate, int_value, str_value)
 /// # }
 ///
-/// # test_executors::sleep_on(async {
+/// # wasm_lite_std::async_doctest!(async {
 /// # use futures_util::StreamExt;
 /// # let (mut aggregate, int_value, str_value) = setup();
 /// // Get initial values
@@ -131,7 +131,7 @@ impl AggregateObserver {
     /// ```
     pub fn add_observer<T>(&mut self, observer: Observer<T>)
     where
-        T: 'static + PartialEq + Clone + Debug + Send,
+        T: 'static + PartialEq + Clone + Debug + Send + Sync,
     {
         // Store the observer as a boxed trait object to erase the type
         self.observers.push(Entry {
@@ -165,7 +165,7 @@ impl AggregateObserver {
     /// // Initially dirty (observer hasn't observed initial value yet)
     /// assert!(aggregate.is_dirty());
     ///
-    /// # test_executors::sleep_on(async {
+    /// # wasm_lite_std::async_doctest!(async {
     /// # use futures_util::StreamExt;
     /// // After observing the value, it's no longer dirty
     /// aggregate.next().await;
@@ -249,7 +249,7 @@ impl Display for AggregateObserver {
 
 impl<T> From<Observer<T>> for AggregateObserver
 where
-    T: 'static + PartialEq + Clone + Debug + Send,
+    T: 'static + PartialEq + Clone + Debug + Send + Sync,
 {
     /// Creates an `AggregateObserver` from a single `Observer`.
     ///
@@ -274,7 +274,7 @@ mod tests {
     use super::AggregateObserver;
     use crate::Value;
     use futures_util::StreamExt;
-    use test_executors::async_test;
+    use wasm_lite::wasm_lite_test;
 
     #[cfg(not(target_arch = "wasm32"))]
     use std::thread;
@@ -283,7 +283,7 @@ mod tests {
 
     use wasm_lite_std::time::Instant;
 
-    #[async_test]
+    #[wasm_lite_test]
     async fn test_aggregate_observer() {
         let value = Value::new(2);
         let value2 = Value::new(0.3);
@@ -305,13 +305,21 @@ mod tests {
         _ = o.next().await;
     }
 
-    #[async_test]
+    #[wasm_lite_test]
     async fn test_repeat_values() {
         let v = Value::new(0);
         let mut o = AggregateObserver::new();
         o.add_observer(v.observe());
         let o1 = o.next().await;
         assert_eq!(o1, Some(0));
+
+        // Started before the spawn, not after. The child sleeps 5x10ms before the
+        // value actually changes, and the assertion below is that we waited out
+        // all of it - so the clock has to start no later than the child does. Read
+        // after `spawn` returns, a child that got going first would have some of
+        // its own sleeping already behind it, and the elapsed time could come in
+        // under 50ms even though nothing went wrong.
+        let begin = Instant::now();
 
         thread::spawn(move || {
             let v = v;
@@ -324,8 +332,6 @@ mod tests {
             std::mem::forget(v);
         });
 
-        let begin = Instant::now();
-
         let o2 = o.next().await;
         assert!(
             begin.elapsed().as_millis() > 49,
@@ -334,7 +340,7 @@ mod tests {
         assert_eq!(o2, Some(0));
     }
 
-    #[async_test]
+    #[wasm_lite_test]
     async fn test_hangup_reports_once_then_ends() {
         let value = Value::new(1);
         let value2 = Value::new(2);
@@ -361,13 +367,13 @@ mod tests {
         assert!(!o.is_dirty());
     }
 
-    #[async_test]
+    #[wasm_lite_test]
     async fn test_empty_aggregate_ends() {
         let mut o = AggregateObserver::new();
         assert_eq!(o.next().await, None);
     }
 
-    #[test]
+    #[wasm_lite_test]
     fn test_aggregate_display() {
         let value = Value::new(42);
         let mut aggregate = AggregateObserver::new();

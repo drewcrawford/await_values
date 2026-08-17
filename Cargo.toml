@@ -16,11 +16,13 @@ rust-version = "1.85.1"
 [dependencies]
 atomic-waker = "~1"
 treiber_stack = "1.1"
+# TODO: back to a crates.io version once wasm_lite releases the test support
+# used below (native `#[wasm_lite_test]`, async bodies, public `block_on`).
 wasm_lite_std = { path = "../wasm_lite/crates/wasm_lite_std" }
 futures-core = "0.3.31"
 [dev-dependencies]
-test_executors = "0.4.1"
 futures-util = "0.3"
-
-[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+# Provides `#[wasm_lite_test]`, which is one attribute for both targets: a libtest
+# `#[test]` off wasm32, a browser test on it. Needed on every target, not just
+# wasm32. See the TODO above about getting both of these back onto crates.io.
 wasm_lite = { path = "../wasm_lite/crates/wasm_lite" }

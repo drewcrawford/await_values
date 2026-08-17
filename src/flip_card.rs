@@ -81,6 +81,48 @@ const READ: u8 = 0b01111111; // 127
 /// Initial state with no readers or writers.
 const UNLOCKED: u8 = 0b00000000; // 0
 
+/// Drops a slot's read lock, including while unwinding.
+///
+/// `try_read` calls `T::clone` while holding the lock. If that unwinds, the
+/// reader count must still come back down: a leaked reader keeps the slot out
+/// of `UNLOCKED` forever, and every later `try_write`/`take` spins on it
+/// without end.
+///
+/// # Targets without unwinding
+///
+/// This works by running `Drop` during an unwind, so it only protects targets
+/// that unwind. `wasm32-unknown-unknown` is `panic-strategy = "abort"`: a
+/// panicking `T::clone` traps instead, no destructor runs, and the lock leaks
+/// exactly as it did before these guards existed.
+///
+/// That is worse there than the native equivalent rather than merely equal. A
+/// wasm panic is local to one instance — a worker traps only itself while the
+/// main thread, sibling workers, and *shared memory* carry on — so the wedged
+/// `FlipCard` outlives the thread that wedged it, and every surviving thread
+/// spins on it forever. Only the panicking worker dies.
+///
+/// A `panic = "unwind"` mode is on wasm_lite's roadmap; these guards start
+/// working on wasm32 the moment one exists, with no change here.
+struct ReadGuard<'a>(&'a AtomicU8);
+
+impl Drop for ReadGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
+}
+
+/// Drops a slot's write lock, including while unwinding.
+///
+/// Mirrors [`ReadGuard`] for the write side: a leaked `WRITE` bit would make
+/// every later reader spin forever.
+struct WriteGuard<'a>(&'a AtomicU8);
+
+impl Drop for WriteGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(UNLOCKED, Ordering::Release);
+    }
+}
+
 impl<T> Slot<T> {
     /// Creates a new slot with the given initial data.
     fn new(data: T) -> Self {
@@ -101,6 +143,11 @@ impl<T> Slot<T> {
     where
         T: Clone,
     {
+        // `fetch_update` was renamed to `try_update` in 1.95, which deprecates
+        // this call on newer toolchains (the wasm32 build compiles with
+        // `-D warnings` on nightly). `try_update` is not available at our MSRV
+        // of 1.85.1, so keep the old name until the MSRV reaches 1.95.
+        #[allow(deprecated)]
         let r = self
             .atomic
             .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |value| {
@@ -117,10 +164,10 @@ impl<T> Slot<T> {
             });
         match r {
             Ok(_lock_value) => {
-                // Successfully acquired read lock
-                let data = unsafe { (&*self.data.get()).clone() };
-                self.atomic.fetch_sub(1, Ordering::Release); // Release the read lock
-                Some(data)
+                // Successfully acquired read lock. The guard releases it even if
+                // `T::clone` panics, so an unwinding clone can't wedge the slot.
+                let _guard = ReadGuard(&self.atomic);
+                Some(unsafe { (&*self.data.get()).clone() })
             }
             Err(_) => None,
         }
@@ -142,10 +189,12 @@ impl<T> Slot<T> {
             .compare_exchange(UNLOCKED, WRITE, Ordering::Acquire, Ordering::Relaxed);
         match r {
             Ok(_) => {
-                // Successfully acquired write lock
-                let old_data = unsafe { std::ptr::replace(self.data.get(), data.clone()) };
-                self.atomic.store(UNLOCKED, Ordering::Release); // Release the write lock
-                Some(old_data)
+                // Successfully acquired write lock. The guard releases it even if
+                // `T::clone` panics; the clone is evaluated before `replace` runs,
+                // so an unwinding clone leaves the slot's old value in place and
+                // the front/back invariant intact.
+                let _guard = WriteGuard(&self.atomic);
+                Some(unsafe { std::ptr::replace(self.data.get(), data.clone()) })
             }
             Err(_) => {
                 // Failed to acquire write lock
@@ -191,7 +240,9 @@ impl<T> Slot<Option<T>> {
 ///
 /// The type `T` must implement:
 /// - `Clone`: Required for read operations to return owned values
-/// - `Send`: Required for thread safety
+/// - `Send`: Required to move the card (and its value) between threads
+/// - `Sync`: Required to *share* the card, because concurrent readers clone
+///   out of the same slot at the same time
 ///
 /// # Performance Characteristics
 ///
@@ -202,9 +253,11 @@ impl<T> Slot<Option<T>> {
 ///
 /// # Thread Safety
 ///
-/// `FlipCard<T>` is `Send` and `Sync` when `T: Send`, allowing it to be shared
-/// across threads safely. The internal synchronization ensures data consistency
-/// without requiring external locks.
+/// `FlipCard<T>` is `Send` when `T: Send`, and `Sync` when `T: Send + Sync`.
+/// The internal synchronization ensures data consistency without requiring
+/// external locks. `Sync` needs `T: Sync` on top of `T: Send` because `read`
+/// clones under a shared read lock: several threads can be inside `T::clone`
+/// on the same value at once.
 #[derive(Debug)]
 pub struct FlipCard<T> {
     /// First data slot.
@@ -226,9 +279,14 @@ pub struct FlipCard<T> {
 // The internal UnsafeCell is properly synchronized via atomic operations.
 unsafe impl<T: Send> Send for FlipCard<T> {}
 
-// SAFETY: FlipCard<T> can be shared between threads if T can be sent.
-// All methods use proper atomic synchronization to prevent data races.
-unsafe impl<T: Send> Sync for FlipCard<T> {}
+// SAFETY: sharing a FlipCard<T> hands out `&T` to several threads at once -
+// `read` clones out of the front slot under a *shared* read lock, so up to 127
+// threads can be inside `T::clone` on the same value simultaneously. That is
+// exactly what `T: Sync` licenses, so `Sync` is required here in addition to
+// `Send` (which covers moving `T` between threads via `flip_to`/`read`).
+// Dropping `Sync` would let safe code race inside `T::clone` for any
+// `Send + !Sync` type, e.g. `RefCell<i32>`.
+unsafe impl<T: Send + Sync> Sync for FlipCard<T> {}
 
 impl<T> FlipCard<T> {
     /// Creates a new `FlipCard` with the given initial value.
@@ -377,11 +435,63 @@ impl<T> FlipCard<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Barrier};
+    use std::sync::Arc;
+    use wasm_lite::wasm_lite_test;
+
+    // `std::thread::spawn` is unsupported on wasm32; `wasm_lite_std` spawns Web
+    // Workers instead. Same shape, so the threaded tests below read identically
+    // on both targets.
+    #[cfg(not(target_arch = "wasm32"))]
     use std::thread;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_lite_std as thread;
+
+    /// How many threads the contention tests spawn.
+    ///
+    /// Each wasm32 thread is a Web Worker inside a per-test page load, so the
+    /// browser runs are deliberately smaller: enough concurrency to interleave
+    /// readers and writers, but not so much that the suite outruns the runner's
+    /// page deadline.
+    #[cfg(not(target_arch = "wasm32"))]
+    const THREADS: usize = 10;
+    #[cfg(target_arch = "wasm32")]
+    const THREADS: usize = 4;
+
+    /// Iterations per thread in the write-stress tests. Scaled for the same reason.
+    #[cfg(not(target_arch = "wasm32"))]
+    const STRESS: u64 = 100_000;
+    #[cfg(target_arch = "wasm32")]
+    const STRESS: u64 = 2_000;
+
+    /// Blocks every participant until all of them have arrived.
+    ///
+    /// Stands in for `std::sync::Barrier`, which `wasm_lite_std` does not
+    /// provide. Spinning is fine here: it only ever runs on a spawned
+    /// thread/worker, never the browser main thread, and only for as long as
+    /// the slowest participant takes to start.
+    struct StartGate {
+        arrived: std::sync::atomic::AtomicUsize,
+        parties: usize,
+    }
+
+    impl StartGate {
+        fn new(parties: usize) -> Self {
+            Self {
+                arrived: std::sync::atomic::AtomicUsize::new(0),
+                parties,
+            }
+        }
+
+        fn wait(&self) {
+            self.arrived.fetch_add(1, Ordering::AcqRel);
+            while self.arrived.load(Ordering::Acquire) < self.parties {
+                std::hint::spin_loop();
+            }
+        }
+    }
 
     /// Test basic read and write operations
-    #[test]
+    #[wasm_lite_test]
     fn test_basic_operations() {
         let card = FlipCard::new(42);
         assert_eq!(card.read(), 42);
@@ -392,7 +502,7 @@ mod tests {
     }
 
     /// Test that FlipCard works with different types
-    #[test]
+    #[wasm_lite_test]
     fn test_different_types() {
         // String
         let card = FlipCard::new(String::from("hello"));
@@ -409,12 +519,12 @@ mod tests {
     }
 
     /// Test concurrent reads don't block each other
-    #[test]
+    #[wasm_lite_test(worker)]
     fn test_concurrent_reads() {
         let card = Arc::new(FlipCard::new(42));
-        let barrier = Arc::new(Barrier::new(10));
+        let barrier = Arc::new(StartGate::new(THREADS));
 
-        let handles: Vec<_> = (0..10)
+        let handles: Vec<_> = (0..THREADS)
             .map(|_| {
                 let card = Arc::clone(&card);
                 let barrier = Arc::clone(&barrier);
@@ -431,10 +541,10 @@ mod tests {
     }
 
     /// Test concurrent reads and writes
-    #[test]
+    #[wasm_lite_test(worker)]
     fn test_concurrent_read_write() {
         let card = Arc::new(FlipCard::new(0));
-        let barrier = Arc::new(Barrier::new(11));
+        let barrier = Arc::new(StartGate::new(THREADS + 1));
 
         // Writer thread
         let writer = {
@@ -449,7 +559,7 @@ mod tests {
         };
 
         // Reader threads
-        let readers: Vec<_> = (0..10)
+        let readers: Vec<_> = (0..THREADS)
             .map(|_| {
                 let card = Arc::clone(&card);
                 let barrier = Arc::clone(&barrier);
@@ -483,7 +593,7 @@ mod tests {
     }
 
     /// Test that Clone creates independent FlipCards
-    #[test]
+    #[wasm_lite_test]
     fn test_clone() {
         let card1 = FlipCard::new(42);
         let card2 = card1.clone();
@@ -504,7 +614,7 @@ mod tests {
     }
 
     /// Test that From trait works correctly
-    #[test]
+    #[wasm_lite_test]
     fn test_from() {
         let card: FlipCard<i32> = 42.into();
         assert_eq!(card.read(), 42);
@@ -514,7 +624,7 @@ mod tests {
     }
 
     /// Test that multiple writes work correctly
-    #[test]
+    #[wasm_lite_test]
     fn test_sequential_writes() {
         let card = FlipCard::new(0);
 
@@ -527,7 +637,7 @@ mod tests {
     }
 
     /// Test custom types with FlipCard
-    #[test]
+    #[wasm_lite_test]
     fn test_custom_type() {
         #[derive(Clone, Debug, PartialEq)]
         struct Config {
@@ -558,17 +668,17 @@ mod tests {
     }
 
     /// Test that concurrent writers don't panic or lose the slot invariant.
-    #[test]
+    #[wasm_lite_test(worker)]
     fn test_concurrent_writers() {
         let card = Arc::new(FlipCard::new(0u64));
-        let barrier = Arc::new(Barrier::new(4));
+        let barrier = Arc::new(StartGate::new(4));
         let writers: Vec<_> = (0..4)
             .map(|t| {
                 let card = Arc::clone(&card);
                 let barrier = Arc::clone(&barrier);
                 thread::spawn(move || {
                     barrier.wait();
-                    for i in 0..100_000u64 {
+                    for i in 0..STRESS {
                         card.flip_to(t * 1_000_000 + i);
                     }
                 })
@@ -580,14 +690,146 @@ mod tests {
         card.read();
     }
 
+    /// A value whose `Clone` panics on demand.
+    ///
+    /// The two tests below are the only ones here that stay native-only. They
+    /// assert that [`ReadGuard`]/[`WriteGuard`] release during an unwind, and
+    /// `wasm32-unknown-unknown` is `panic-strategy = "abort"` — nothing
+    /// unwinds, so no destructor runs and the behaviour under test does not
+    /// hold there. See [`ReadGuard`] for what that costs a wasm32 caller.
+    ///
+    /// This is a missing-unwind limitation, not a permanent one: if wasm_lite
+    /// ships the `panic = "unwind"` mode on its roadmap, these should be
+    /// revisited as `#[wasm_lite_test(worker)]` cases.
+    #[cfg(not(target_arch = "wasm32"))]
+    mod fussy {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        pub static BOOM: AtomicBool = AtomicBool::new(false);
+
+        #[derive(Debug, PartialEq)]
+        pub struct Fussy(pub u32);
+
+        impl Clone for Fussy {
+            fn clone(&self) -> Self {
+                if BOOM.load(Ordering::Relaxed) {
+                    panic!("clone failed");
+                }
+                Fussy(self.0)
+            }
+        }
+    }
+
+    /// Runs `f` on another thread and reports whether it finished in time.
+    ///
+    /// A leaked slot lock shows up as an endless spin rather than a wrong
+    /// answer, so the tests need a deadline instead of a plain assertion.
+    ///
+    /// The deadline is generous on purpose. It separates "finished" from
+    /// "spinning forever", not "fast" from "slow", and a passing run returns as
+    /// soon as the flag flips — so the only thing a short deadline buys is a
+    /// spurious failure on a loaded machine.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn finishes(f: impl FnOnce() + Send + 'static) -> bool {
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&done);
+        thread::spawn(move || {
+            f();
+            flag.store(true, std::sync::atomic::Ordering::Release);
+        });
+        for _ in 0..3_000 {
+            if done.load(std::sync::atomic::Ordering::Acquire) {
+                return true;
+            }
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
+        false
+    }
+
+    /// Swallows the panic from `f`, without the default hook spamming stderr.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn expect_panic(f: impl FnOnce()) {
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        std::panic::set_hook(hook);
+        assert!(r.is_err(), "expected the clone to panic");
+    }
+
+    /// A `T::clone` that unwinds out of `read` must not leak the read lock.
+    ///
+    /// Without [`ReadGuard`] the reader count never comes back down, so the
+    /// slot never returns to `UNLOCKED` and every later write spins forever.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    fn panicking_clone_does_not_leak_read_lock() {
+        use fussy::{BOOM, Fussy};
+
+        let card = Arc::new(FlipCard::new(Fussy(1)));
+        assert_eq!(card.read(), Fussy(1));
+
+        BOOM.store(true, Ordering::Relaxed);
+        expect_panic({
+            let card = Arc::clone(&card);
+            move || {
+                card.read();
+            }
+        });
+        BOOM.store(false, Ordering::Relaxed);
+
+        let writer = Arc::clone(&card);
+        assert!(
+            finishes(move || {
+                writer.flip_to(Fussy(2));
+            }),
+            "flip_to never completed: read lock leaked on unwind"
+        );
+        assert_eq!(card.read(), Fussy(2));
+    }
+
+    /// A `T::clone` that unwinds out of `flip_to` must not leak the write lock,
+    /// and must leave the written-to slot untouched so the front slot still
+    /// holds a value.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn panicking_clone_does_not_leak_write_lock() {
+        use fussy::{BOOM, Fussy};
+
+        let card = Arc::new(FlipCard::new(Fussy(1)));
+
+        BOOM.store(true, Ordering::Relaxed);
+        expect_panic({
+            let card = Arc::clone(&card);
+            move || {
+                card.flip_to(Fussy(2));
+            }
+        });
+        BOOM.store(false, Ordering::Relaxed);
+
+        // The failed write left the original value in place, in the slot that
+        // was already the front one - so this read succeeds either way.
+        assert_eq!(card.read(), Fussy(1));
+
+        // ...but the *next* write targets the slot the panic aborted in, and
+        // spins forever if that slot is still flagged WRITE.
+        let writer = Arc::clone(&card);
+        assert!(
+            finishes(move || {
+                assert_eq!(writer.flip_to(Fussy(3)), Fussy(1));
+            }),
+            "flip_to never completed: write lock leaked on unwind"
+        );
+        assert_eq!(card.read(), Fussy(3));
+    }
+
+    #[wasm_lite_test(worker)]
     fn reproduce_panic() {
         let card = Arc::new(FlipCard::new(0));
         let card_clone = card.clone();
 
         // Writer thread
         let writer = thread::spawn(move || {
-            for i in 1..1000000 {
+            for i in 1..(STRESS * 10) {
                 card_clone.flip_to(i);
                 // Small sleep to allow reader to interleave
                 // thread::sleep(Duration::from_nanos(1));
@@ -596,7 +838,7 @@ mod tests {
 
         // Reader thread
         let reader = thread::spawn(move || {
-            for _ in 0..1000000 {
+            for _ in 0..(STRESS * 10) {
                 let _ = card.read();
             }
         });

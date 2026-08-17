@@ -34,7 +34,7 @@ been dropped.
 use await_values::{Value, Observer};
 use futures_util::StreamExt;
 
-# test_executors::sleep_on(async {
+# wasm_lite_std::async_doctest!(async {
 // Create an observable value
 let value = Value::new(42);
 
@@ -62,7 +62,7 @@ You can observe multiple values of different types using `AggregateObserver`:
 use await_values::{Value, aggregate::AggregateObserver};
 use futures_util::StreamExt;
 
-# test_executors::sleep_on(async {
+# wasm_lite_std::async_doctest!(async {
 let temperature = Value::new(20.5);
 let status = Value::new("OK");
 
@@ -88,11 +88,24 @@ assert_eq!(changed_index, Some(0)); // temperature changed
 All types in this library are thread-safe and can be shared across threads.
 `Value` uses interior mutability with proper synchronization, making it safe to use from multiple threads.
 
+Sharing requires `T: Send + Sync`: concurrent readers clone out of the same
+storage at the same time, so `T::clone` must tolerate being called from several
+threads at once. `Send + !Sync` types such as `RefCell<T>` are therefore usable
+in a `Value` on a single thread, but the `Value` cannot be shared.
+
 ```
 use await_values::Value;
 use std::sync::Arc;
+# #[cfg(not(target_arch = "wasm32"))]
 use std::thread;
+# // std::thread::spawn is unsupported on wasm32; wasm_lite_std::spawn is the
+# // browser equivalent, and is what this crate's own tests use there.
+# #[cfg(target_arch = "wasm32")]
+# use wasm_lite_std as thread;
 
+# // `join` blocks, which traps on the browser main thread, so on wasm32 the body
+# // runs on a dedicated worker. Off wasm32 this just calls the closure.
+# wasm_lite_std::worker_doctest!(|| {
 // Wrap Value in Arc to share between threads
 let value = Arc::new(Value::new(0));
 let value_clone = Arc::clone(&value);
@@ -103,6 +116,7 @@ let handle = thread::spawn(move || {
 
 handle.join().unwrap();
 assert_eq!(value.get(), 42);
+# });
 ```
 */
 
@@ -338,7 +352,7 @@ impl<T: Clone> Drop for Value<T> {
 /// use await_values::Value;
 /// use futures_util::StreamExt;
 ///
-/// # test_executors::sleep_on(async {
+/// # wasm_lite_std::async_doctest!(async {
 /// let value = Value::new("initial");
 /// let mut observer = value.observe();
 ///
@@ -553,7 +567,7 @@ impl<T> Observer<T> {
     /// // Initially dirty (no value observed yet)
     /// assert!(observer.is_dirty());
     ///
-    /// # test_executors::sleep_on(async {
+    /// # wasm_lite_std::async_doctest!(async {
     /// // After observing, no longer dirty
     /// observer.next().await.unwrap();
     /// assert!(!observer.is_dirty());
@@ -663,14 +677,14 @@ where
 #[cfg(test)]
 mod tests {
     use futures_util::StreamExt;
-    use test_executors::async_test;
+    use wasm_lite::wasm_lite_test;
 
     #[cfg(not(target_arch = "wasm32"))]
     use std::thread;
     #[cfg(target_arch = "wasm32")]
     use wasm_lite_std as thread;
 
-    #[test]
+    #[wasm_lite_test]
     fn test_value() {
         let value = super::Value::new(42);
         assert_eq!(value.get(), 42);
@@ -680,7 +694,7 @@ mod tests {
         assert_eq!(value.get(), 100);
     }
 
-    #[test]
+    #[wasm_lite_test]
     fn test_observer() {
         let value = super::Value::new(42);
         let mut observer = value.observe();
@@ -689,7 +703,7 @@ mod tests {
         assert_eq!(observer.current_value().unwrap(), 100);
     }
 
-    #[async_test]
+    #[wasm_lite_test]
     async fn test_observer_next() {
         let value = super::Value::new(42);
         let mut observer = value.observe();
@@ -711,7 +725,7 @@ mod tests {
         assert_eq!(next_value, 200);
     }
 
-    #[async_test]
+    #[wasm_lite_test]
     async fn drop_value() {
         let value = super::Value::new(42);
         let mut observer = value.observe();
@@ -735,7 +749,7 @@ mod tests {
             result2
         );
     }
-    #[test]
+    #[wasm_lite_test]
     fn test_observer_clone_drop_loop() {
         let value = super::Value::new(42);
         let observer = value.observe();
@@ -745,7 +759,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[wasm_lite_test]
     fn test_value_partialeq() {
         let value1 = super::Value::new(42);
         let value2 = super::Value::new(42);
@@ -759,7 +773,7 @@ mod tests {
         assert_ne!(value1, value2);
     }
 
-    #[test]
+    #[wasm_lite_test]
     fn test_value_hash() {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -802,7 +816,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wasm_lite_test]
     fn test_observer_display() {
         let value = super::Value::new(42);
         let observer = value.observe();
