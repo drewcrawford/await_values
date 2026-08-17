@@ -143,14 +143,9 @@ impl<T> Slot<T> {
     where
         T: Clone,
     {
-        // `fetch_update` was renamed to `try_update` in 1.95, which deprecates
-        // this call on newer toolchains (the wasm32 build compiles with
-        // `-D warnings` on nightly). `try_update` is not available at our MSRV
-        // of 1.85.1, so keep the old name until the MSRV reaches 1.95.
-        #[allow(deprecated)]
         let r = self
             .atomic
-            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |value| {
+            .try_update(Ordering::AcqRel, Ordering::Relaxed, |value| {
                 if value & WRITE != 0 {
                     // If the WRITE bit is set, we cannot read
                     None
@@ -704,8 +699,28 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     mod fussy {
         use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Mutex, MutexGuard};
 
         pub static BOOM: AtomicBool = AtomicBool::new(false);
+
+        /// Serializes the tests that arm [`BOOM`].
+        ///
+        /// Both the flag and the panic hook `expect_panic` swaps are
+        /// process-wide, and libtest runs tests in parallel. Without this, one
+        /// test disarming `BOOM` lands in the middle of the other's panicking
+        /// clone — which then does not panic, failing an assertion that has
+        /// nothing to do with the code under test.
+        static GATE: Mutex<()> = Mutex::new(());
+
+        /// Holds the gate for the caller's whole test body.
+        ///
+        /// A test that panics while holding it poisons the mutex, but the only
+        /// thing being guarded is "one at a time" — there is no invariant left
+        /// broken — so recover rather than cascading the failure into the other
+        /// test.
+        pub fn gate() -> MutexGuard<'static, ()> {
+            GATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        }
 
         #[derive(Debug, PartialEq)]
         pub struct Fussy(pub u32);
@@ -764,6 +779,7 @@ mod tests {
     #[test]
     fn panicking_clone_does_not_leak_read_lock() {
         use fussy::{BOOM, Fussy};
+        let _gate = fussy::gate();
 
         let card = Arc::new(FlipCard::new(Fussy(1)));
         assert_eq!(card.read(), Fussy(1));
@@ -794,6 +810,7 @@ mod tests {
     #[test]
     fn panicking_clone_does_not_leak_write_lock() {
         use fussy::{BOOM, Fussy};
+        let _gate = fussy::gate();
 
         let card = Arc::new(FlipCard::new(Fussy(1)));
 

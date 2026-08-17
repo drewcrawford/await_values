@@ -10,19 +10,19 @@ license = "MIT OR Apache-2.0"
 keywords = ["await","observer", "subscriber", "observable"]
 categories = ["asynchronous", "concurrency", "gui", "rust-patterns"]
 exclude = [".*"]
-rust-version = "1.85.1"
+# Set by wasm_lite_std 0.1.2, which is itself 1.95.0. Nothing in this crate
+# needs anything newer than 1.85 on its own.
+rust-version = "1.95.0"
 
 
 [dependencies]
 atomic-waker = "~1"
 treiber_stack = "1.1"
-# TODO: back to a crates.io version once wasm_lite releases the test support
-# used below (native `#[wasm_lite_test]`, async bodies, public `block_on`).
-wasm_lite_std = { path = "../wasm_lite/crates/wasm_lite_std" }
+wasm_lite_std = "0.1.2"
 futures-core = "0.3.31"
 [dev-dependencies]
 futures-util = "0.3"
 # Provides `#[wasm_lite_test]`, which is one attribute for both targets: a libtest
 # `#[test]` off wasm32, a browser test on it. Needed on every target, not just
-# wasm32. See the TODO above about getting both of these back onto crates.io.
-wasm_lite = { path = "../wasm_lite/crates/wasm_lite" }
+# wasm32.
+wasm_lite = "0.1.2"

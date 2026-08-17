@@ -13,27 +13,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `Value<T>` and `Observer<T>` are now `Send`/`Sync` only when `T: Send + Sync`, and `AggregateObserver::add_observer` (with `From<Observer<T>>`) picked up the same bound. Note that this bites *moving* one between threads too, not just sharing it. Every ordinary `T` — `i32`, `String`, `Vec<_>`, `Arc<_>` — sails through untouched; the types this turns away are precisely the ones that were never safe to share in the first place. `Send + !Sync` values are still perfectly welcome on a single thread.
 
+- **MSRV is now 1.95.0**, up from 1.85.1. Not our doing, exactly: `wasm_lite_std` 0.1.2 sets its own floor at 1.95.0, and it is a regular dependency, so ours cannot sit below it. Nothing in this crate needs anything past 1.85 on its own.
+
 ### Fixed
 
 - **A panicking `Clone` no longer wedges the buffer**: if `T::clone` unwound while a slot lock was held, the lock leaked — and a leaked read lock left every later write spinning at 100% CPU forever, `Value`'s own destructor included. A leaked write lock did the same to readers. Both now release on the way out, and a write that falls over mid-clone leaves the old value exactly where it was.
 
   One caveat, and it is a real one: this rests on unwinding, and `wasm32-unknown-unknown` is `panic-strategy = "abort"`. A panicking clone traps there instead, no destructor runs, and the lock leaks just as it did before. Worse, in fact — a wasm panic is local to one instance, so the trapped worker dies alone while shared memory and every sibling thread carry on, spinning on a `FlipCard` that outlived the thread that broke it. If a `panic = "unwind"` mode ever lands, the guards start working there with no change on our end.
 
-- **The wasm32 build compiles on current nightly again**: `AtomicU8::fetch_update` was renamed to `try_update` in 1.95, and since the wasm32 leg builds with `-D warnings`, a polite deprecation notice turned into a hard error. Pinned to the old spelling with a note, because `try_update` does not exist at our MSRV of 1.85.1.
+- **The wasm32 build compiles on current nightly again**: `AtomicU8::fetch_update` was renamed to `try_update` in 1.95, and since the wasm32 leg builds with `-D warnings`, a polite deprecation notice turned into a hard error. Now that the MSRV is 1.95 we simply call `try_update`.
 
-- **Unflaked a timing test**: `test_repeat_values` started its stopwatch *after* spawning the thread it was timing. A child that got off the line first already had some of its own sleeping behind it, so the elapsed time could land just under the threshold with nothing actually wrong. The clock now starts before the spawn.
+- **Unflaked two tests**: the pair covering the panic-safety fix above shared a global "make the next clone panic" flag *and* the process-wide panic hook, while libtest happily ran them in parallel — so one could disarm the flag mid-way through the other's panicking clone, failing an assertion about code that was working fine. They take a gate now.
+
+  Separately, `test_repeat_values` started its stopwatch *after* spawning the thread it was timing. A child that got off the line first already had some of its own sleeping behind it, so the elapsed time could land just under the threshold with nothing actually wrong. The clock now starts before the spawn.
 
 ### Changed
 
 - **Traded `test_executors` for wasm_lite's test support**: `#[test_executors::async_test]` becomes `#[wasm_lite::wasm_lite_test]` — one attribute that is a plain libtest `#[test]` off wasm32 and a browser test on it — and the `test_executors::sleep_on(…)` wrapper in doctests becomes `wasm_lite_std::async_doctest!(…)`. wasm-bindgen has left the dependency graph entirely.
 
-  This gets **wasm32 tests running again**, which the published `test_executors` was quietly blocking: its `#[async_test]` still expands to `#[wasm_bindgen_test]`, and nothing here depends on `wasm_bindgen_test` any more. Tests and doctests now run in a real browser by way of the `wasm_lite` runner.
+  This gets **wasm32 tests running again**, which `test_executors` was quietly blocking: its `#[async_test]` still expands to `#[wasm_bindgen_test]`, and nothing here depends on `wasm_bindgen_test` any more. Tests and doctests now run in a real browser by way of the `wasm_lite` runner, which the repo's `.cargo/config.toml` is pointed at.
 
   Test names shed the old prefix along the way — `async_test_test_observer_next` is now simply `test_observer_next`.
 
 - **Nearly the whole suite runs on wasm32 now**: 23 of 25 unit tests run in a browser, up from 6. The contention tests (`test_concurrent_reads`, `test_concurrent_read_write`, `test_concurrent_writers`, `reproduce_panic`) run on genuine Web Workers via `#[wasm_lite_test(worker)]`, with thread and iteration counts scaled down there to fit the runner's page deadline. `wasm_lite_std` has no `std::sync::Barrier`, so they line up on a small spin-based `StartGate` instead.
 
   The two holdouts are the panicking-`Clone` tests, which exist to prove the slot guards release during an unwind — and as noted above, wasm32 does not unwind. They stay native-only until it can.
+
+- **`web-time` out, `wasm_lite_std` in** (`0.1.2`): the wasm32 clock, threading and synchronization now come from `wasm_lite_std`, which is also what backs the internal `FlipCard` write lock. `test_executors` is gone from the dev-dependencies in favour of `wasm_lite`, and `wasm-bindgen` is no longer anywhere in the graph — on any target.
 
 - **Slimmed down the wasm32 link flags**: added the `__stack_pointer` export the wasm_lite runner needs, and dropped `__tls_align`, `__tls_base`, `__heap_base` and `-Csymbol-mangling-version=legacy`, which were only ever there to work around wasm-bindgen issues that no longer apply to us.
 
