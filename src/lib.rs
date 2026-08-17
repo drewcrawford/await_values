@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*!
+# await_values
+
 Primitives for subscribing to / notifying about changes to values.
 
-![logo](../../../art/logo.png)
+![logo](https://github.com/drewcrawford/await_values/raw/main/art/logo.png)
 
 This library provides a simple way to create observable values that can notify multiple
 observers when they change. It's particularly useful for GUI applications, state management,
@@ -34,7 +36,7 @@ been dropped.
 use await_values::{Value, Observer};
 use futures_util::StreamExt;
 
-# wasm_lite_std::async_doctest!(async {
+wasm_lite_std::async_doctest!(async {
 // Create an observable value
 let value = Value::new(42);
 
@@ -49,7 +51,7 @@ value.set(100);
 
 // Observe the change
 assert_eq!(observer.next().await.unwrap(), 100);
-# });
+});
 ```
 
 # Advanced Usage
@@ -62,7 +64,7 @@ You can observe multiple values of different types using `AggregateObserver`:
 use await_values::{Value, aggregate::AggregateObserver};
 use futures_util::StreamExt;
 
-# wasm_lite_std::async_doctest!(async {
+wasm_lite_std::async_doctest!(async {
 let temperature = Value::new(20.5);
 let status = Value::new("OK");
 
@@ -80,7 +82,7 @@ temperature.set(25.0);
 // See which observer changed
 let changed_index = aggregate.next().await;
 assert_eq!(changed_index, Some(0)); // temperature changed
-# });
+});
 ```
 
 # Thread Safety
@@ -93,30 +95,27 @@ storage at the same time, so `T::clone` must tolerate being called from several
 threads at once. `Send + !Sync` types such as `RefCell<T>` are therefore usable
 in a `Value` on a single thread, but the `Value` cannot be shared.
 
+`std::thread` is the obvious spawner off wasm32; the example uses
+`wasm_lite_std::spawn` because it is the one spelling that works on both, and
+`worker_doctest!` because the blocking `join` below would trap on the browser's
+main thread.
+
 ```
 use await_values::Value;
 use std::sync::Arc;
-# #[cfg(not(target_arch = "wasm32"))]
-use std::thread;
-# // std::thread::spawn is unsupported on wasm32; wasm_lite_std::spawn is the
-# // browser equivalent, and is what this crate's own tests use there.
-# #[cfg(target_arch = "wasm32")]
-# use wasm_lite_std as thread;
 
-# // `join` blocks, which traps on the browser main thread, so on wasm32 the body
-# // runs on a dedicated worker. Off wasm32 this just calls the closure.
-# wasm_lite_std::worker_doctest!(|| {
+wasm_lite_std::worker_doctest!(|| {
 // Wrap Value in Arc to share between threads
 let value = Arc::new(Value::new(0));
 let value_clone = Arc::clone(&value);
 
-let handle = thread::spawn(move || {
+let handle = wasm_lite_std::spawn(move || {
     value_clone.set(42);
 });
 
 handle.join().unwrap();
 assert_eq!(value.get(), 42);
-# });
+});
 ```
 */
 

@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The wasm32 build compiles on current nightly again**: `AtomicU8::fetch_update` was renamed to `try_update` in 1.95, and since the wasm32 leg builds with `-D warnings`, a polite deprecation notice turned into a hard error. Now that the MSRV is 1.95 we simply call `try_update`.
 
+- **The shipped docs match the code again**: the crate-doc logo was a relative path, which resolves against `target/doc` locally and against nothing at all on docs.rs — it is an absolute URL now. `README.md` had drifted from `lib.rs` besides: it never picked up the `T: Send + Sync` requirement above, and still called the library lock-free a while after writers started serializing on a mutex. Both are back in sync, and `release_prep`'s `readme-sync` check keeps them there.
+
+  The examples changed shape slightly in the process. The executor call each one needs is now written out (`wasm_lite_std::async_doctest!(…)`) rather than hidden behind rustdoc's `#`, so the README shows exactly the code the doctest runs — and the thread-safety example reaches for `wasm_lite_std::spawn`, the one spelling that works on both targets, instead of quietly swapping `std::thread` out on wasm32.
+
 - **Unflaked two tests**: the pair covering the panic-safety fix above shared a global "make the next clone panic" flag *and* the process-wide panic hook, while libtest happily ran them in parallel — so one could disarm the flag mid-way through the other's panicking clone, failing an assertion about code that was working fine. They take a gate now.
 
   Separately, `test_repeat_values` started its stopwatch *after* spawning the thread it was timing. A child that got off the line first already had some of its own sleeping behind it, so the elapsed time could land just under the threshold with nothing actually wrong. The clock now starts before the spawn.

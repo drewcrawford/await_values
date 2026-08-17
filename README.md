@@ -8,7 +8,7 @@ This library provides a simple way to create observable values that can notify m
 observers when they change. It's particularly useful for GUI applications, state management,
 and reactive programming patterns.
 
-## Core Concepts
+# Core Concepts
 
 This library primarily imagines your value type is:
 * `Clone` - so that it can be cloned for observers.
@@ -21,9 +21,9 @@ Our cast of characters includes:
 
 This library uses asynchronous functions and is executor-agnostic. It does not depend on tokio.
 
-The library uses lock-free atomic algorithms internally for high-performance concurrent access. The internal `FlipCard` implementation provides a lock-free double-buffer that allows readers to never block, supporting up to 127 concurrent readers per slot with atomic synchronization.
+The library uses atomic algorithms internally for high-performance concurrent access. The internal `FlipCard` implementation provides a double-buffer with lock-free reads that never block, supporting up to 127 concurrent readers per slot with atomic synchronization. Concurrent writers serialize on an internal mutex.
 
-## Quick Start
+# Quick Start
 
 Both `Observer` and `aggregate::AggregateObserver` implement the `futures_core::Stream` trait,
 which is the primary way to consume values from observers. The `Stream` trait provides the `next()`
@@ -34,6 +34,7 @@ been dropped.
 use await_values::{Value, Observer};
 use futures_util::StreamExt;
 
+wasm_lite_std::async_doctest!(async {
 // Create an observable value
 let value = Value::new(42);
 
@@ -48,11 +49,12 @@ value.set(100);
 
 // Observe the change
 assert_eq!(observer.next().await.unwrap(), 100);
+});
 ```
 
-## Advanced Usage
+# Advanced Usage
 
-### Observing Multiple Values
+## Observing Multiple Values
 
 You can observe multiple values of different types using `AggregateObserver`:
 
@@ -60,6 +62,7 @@ You can observe multiple values of different types using `AggregateObserver`:
 use await_values::{Value, aggregate::AggregateObserver};
 use futures_util::StreamExt;
 
+wasm_lite_std::async_doctest!(async {
 let temperature = Value::new(20.5);
 let status = Value::new("OK");
 
@@ -77,26 +80,38 @@ temperature.set(25.0);
 // See which observer changed
 let changed_index = aggregate.next().await;
 assert_eq!(changed_index, Some(0)); // temperature changed
+});
 ```
 
-## Thread Safety
+# Thread Safety
 
 All types in this library are thread-safe and can be shared across threads.
 `Value` uses interior mutability with proper synchronization, making it safe to use from multiple threads.
 
+Sharing requires `T: Send + Sync`: concurrent readers clone out of the same
+storage at the same time, so `T::clone` must tolerate being called from several
+threads at once. `Send + !Sync` types such as `RefCell<T>` are therefore usable
+in a `Value` on a single thread, but the `Value` cannot be shared.
+
+`std::thread` is the obvious spawner off wasm32; the example uses
+`wasm_lite_std::spawn` because it is the one spelling that works on both, and
+`worker_doctest!` because the blocking `join` below would trap on the browser's
+main thread.
+
 ```rust
 use await_values::Value;
 use std::sync::Arc;
-use std::thread;
 
+wasm_lite_std::worker_doctest!(|| {
 // Wrap Value in Arc to share between threads
 let value = Arc::new(Value::new(0));
 let value_clone = Arc::clone(&value);
 
-let handle = thread::spawn(move || {
+let handle = wasm_lite_std::spawn(move || {
     value_clone.set(42);
 });
 
 handle.join().unwrap();
 assert_eq!(value.get(), 42);
+});
 ```
