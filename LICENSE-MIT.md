@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2025 Drew Crawford; https://sealedabstract.com/code/await_values
+Copyright (c) 2026 Drew Crawford; https://sealedabstract.com/code/await_values
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

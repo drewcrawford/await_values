@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-17
+
 ### Breaking Changes
 
 - **`Send` and `Sync` now ask for `T: Sync` as well**: sharing a `Value<T>` across threads used to require only `T: Send`, which was unsound. Readers clone straight out of the shared slot, so up to 127 threads can be sitting inside `T::clone` on the same value at once — and safe code could hand a `Value<RefCell<i32>>` to two threads and race on the borrow flag. Miri agrees, loudly.
@@ -96,5 +98,6 @@ Initial release of await_values—your friendly neighborhood async observable va
 - **Executor-agnostic**: Works with any async runtime or no runtime at all
 - **WASM support**: Runs great in browsers thanks to careful synchronization primitives
 
+[0.3.0]: https://github.com/drewcrawford/await_values/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/drewcrawford/await_values/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/drewcrawford/await_values/releases/tag/v0.1.0
