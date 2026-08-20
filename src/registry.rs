@@ -39,22 +39,36 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use wasm_lite_std::time::Instant;
 
+/// How many entries the registry keeps when `AWAIT_VALUES_REGISTRY_CAPACITY` is unset.
 pub const DEFAULT_CAPACITY: usize = 1024;
 
+/// One recorded value.
+///
+/// Note what is absent: nothing here is the value itself. Generation and
+/// timing answer staleness, and cannot leak application data.
 #[derive(Clone, Debug)]
 pub struct Entry {
+    /// A locally minted id, always distinct. What `--id` selects.
     pub id: u64,
+    /// Source file the value was created in, captured with `#[track_caller]`.
     pub created_at_file: &'static str,
+    /// Line within that file.
     pub created_at_line: u32,
+    /// When it was created.
     pub created: Instant,
     /// How many times the value has been set. Never *what* it was set to.
     pub generation: u64,
+    /// When it was last set, and `None` if it never has been. The two are
+    /// distinguished so "never set since construction" cannot be misread as
+    /// "unchanged for a while".
     pub last_change: Option<Instant>,
     /// Observers created from this value that have not been dropped.
     pub live_observers: u64,
     /// The highest generation any observer has caught up to. The gap to
     /// `generation` is how far the furthest-behind reader could be.
     pub observed_generation: u64,
+    /// Whether the value still exists. A dropped value with live observers is
+    /// a publisher that went away underneath its readers.
     pub alive: bool,
 }
 
@@ -171,14 +185,22 @@ pub(crate) fn record_value_dropped(id: u64) {
     update(id, |entry| entry.alive = false);
 }
 
+/// Counts covering the whole registry, including what it has forgotten.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RegistryStats {
+    /// Total ever recorded, including entries since forgotten.
     pub created: u64,
+    /// How many were forgotten to stay within `capacity`. Non-zero means the
+    /// snapshot is not the whole history -- which is the difference between
+    /// "nothing is stuck" and "I lost it".
     pub dropped: u64,
+    /// How many are held right now.
     pub retained: usize,
+    /// The bound currently in force.
     pub capacity: usize,
 }
 
+/// Reads the registry counters without copying out the entries.
 pub fn stats() -> RegistryStats {
     let (retained, capacity) = with(|registry| (registry.entries.len(), registry.capacity))
         .unwrap_or((0, configured_capacity()));
