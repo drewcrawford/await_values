@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Stream consumers now count as caught up in value diagnostics.** Polling an
+  `Observer` (directly or through `AggregateObserver`) updated its local value
+  but not the optional `exfiltrate` registry, leaving an actively consumed
+  stream looking permanently stale. Normal stream polling now advances the
+  observed generation just like `current_value()` does.
+
 ## [0.3.0] - 2026-08-17
 
 ### Breaking Changes

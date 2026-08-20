@@ -8,6 +8,7 @@
 use await_values::Value;
 use exfiltrate_internal::command::{Command, Response};
 use exfiltrate_internal::snapshot::{SnapshotRow, SnapshotSet, SnapshotValue};
+use futures_util::StreamExt;
 
 fn ask(args: &[&str]) -> SnapshotSet {
     await_values::exfiltrate_provider::install();
@@ -50,7 +51,7 @@ fn bool_of(row: &SnapshotRow, name: &str) -> bool {
 }
 
 #[wasm_lite::wasm_lite_test]
-fn the_registry_reports_observers_and_staleness_but_never_values() {
+async fn the_registry_reports_observers_and_staleness_but_never_values() {
     let value = Value::new(1_u32);
     let row = newest();
     let id = u64_of(&row, "id");
@@ -91,6 +92,15 @@ fn the_registry_reports_observers_and_staleness_but_never_values() {
     assert_eq!(observer.current_value(), Some(3));
     let row = row_for(id);
     assert_eq!(u64_of(&row, "observed_generation"), 2);
+    assert_eq!(u64_of(&row, "stale_by"), 0);
+
+    // Stream consumption is observation too; callers should not have to use
+    // the synchronous side channel just to keep diagnostics accurate.
+    value.set(4);
+    assert_eq!(u64_of(&row_for(id), "stale_by"), 1);
+    assert_eq!(observer.next().await, Some(4));
+    let row = row_for(id);
+    assert_eq!(u64_of(&row, "observed_generation"), 3);
     assert_eq!(u64_of(&row, "stale_by"), 0);
 
     // Dropping the observer is visible, and so is dropping the value.

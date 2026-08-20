@@ -617,6 +617,8 @@ impl<T> Observer<T> {
         T: PartialEq + Clone,
     {
         let observe = self.shared.value.read();
+        #[cfg(feature = "exfiltrate")]
+        registry::record_observed(self.shared.registry_id);
         if let Some(observe) = observe {
             //determine if new or not
             if let Some(last) = &self.observed {
