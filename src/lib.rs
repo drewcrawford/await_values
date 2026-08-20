@@ -6,24 +6,40 @@ Primitives for subscribing to / notifying about changes to values.
 
 ![logo](https://github.com/drewcrawford/await_values/raw/main/art/logo.png)
 
-This library provides a simple way to create observable values that can notify multiple
-observers when they change. It's particularly useful for GUI applications, state management,
-and reactive programming patterns.
+A [`Value<T>`](Value) holds a `T`. Any number of [`Observer`]s — each a
+[`Stream`](futures_core::Stream) — can await changes to it, from any thread, on
+any executor. Set the value and every observer wakes and yields the new value;
+drop the `Value` and every observer's stream ends.
+
+This is a primitive for *state*, not events: a connection status, a window
+size, a config struct. Observers always see the current value. One that polls
+slowly skips intermediate values rather than queueing them, and setting a value
+equal (by `PartialEq`) to what an observer last saw does not re-deliver it. If
+every message matters, you want a channel, not this crate (see
+[Alternatives](#alternatives)).
 
 # Core Concepts
 
-This library primarily imagines your value type is:
-* `Clone` - so that it can be cloned for observers.
-* `PartialEq` - so that we can diff values and only notify observers when the value changes.
+Your value type needs to be:
+* `Clone` — observers receive copies, so readers never hold a lock on the storage.
+* `PartialEq` — observers diff against the last value they yielded and skip duplicates.
 
-Our cast of characters includes:
-* [`Value`] - Allocates storage for a value that can be observed.
-* [`Observer`] - A handle to a value that can be used to observe when the value changes remotely.
-* [`aggregate::AggregateObserver`] - A handle to multiple heterogeneous values that can be used to observe when any of the values change.
+The cast of characters:
+* [`Value`] — owns the storage. Not `Clone`; wrap it in an `Arc` to share
+  (which is why [`set`](Value::set) takes `&self`). [`get`](Value::get) and
+  `set` also work directly, with no observer involved.
+* [`Observer`] — a `Stream` of distinct values, created by
+  [`Value::observe`]. The first poll yields the current value immediately;
+  later polls wait for a change. [`current_value`](Observer::current_value)
+  and [`is_dirty`](Observer::is_dirty) cover the non-async cases.
+* [`aggregate::AggregateObserver`] — bundles observers of *different* types
+  into one stream that yields the index of whichever changed.
 
-This library uses asynchronous functions and is executor-agnostic. It does not depend on tokio.
-
-The library uses atomic algorithms internally for high-performance concurrent access. The internal `FlipCard` implementation provides a double-buffer with lock-free reads that never block, supporting up to 127 concurrent readers per slot with atomic synchronization. Concurrent writers serialize on an internal mutex.
+The crate is executor-agnostic: the only async dependency is the
+`futures_core::Stream` trait, so it runs under tokio, smol, a hand-rolled
+`block_on`, or the browser event loop, unchanged. wasm32 is a first-class
+target — the test suite runs in a real headless browser, and nothing here
+pulls in wasm-bindgen.
 
 # Quick Start
 
@@ -54,11 +70,15 @@ assert_eq!(observer.next().await.unwrap(), 100);
 });
 ```
 
-# Advanced Usage
+# Observing Multiple Values
 
-## Observing Multiple Values
-
-You can observe multiple values of different types using `AggregateObserver`:
+[`aggregate::AggregateObserver`] waits on many values at once, even when their
+types differ. Instead of yielding values (they'd have different types), it
+yields the index of the observer that changed; you then read the value from
+the matching observer or `Value`. It polls in index order and yields the
+lowest ready index, so put chatty values last. When an observed `Value` is
+dropped, its index is yielded one final time; when all of them are gone, the
+stream ends.
 
 ```
 use await_values::{Value, aggregate::AggregateObserver};
@@ -87,18 +107,19 @@ assert_eq!(changed_index, Some(0)); // temperature changed
 
 # Thread Safety
 
-All types in this library are thread-safe and can be shared across threads.
-`Value` uses interior mutability with proper synchronization, making it safe to use from multiple threads.
+Every type here is safe to share across threads. `set` takes `&self`, so the
+usual pattern is `Arc<Value<T>>` with writers and observers on whatever
+threads you like.
 
-Sharing requires `T: Send + Sync`: concurrent readers clone out of the same
-storage at the same time, so `T::clone` must tolerate being called from several
-threads at once. `Send + !Sync` types such as `RefCell<T>` are therefore usable
-in a `Value` on a single thread, but the `Value` cannot be shared.
+Sharing requires `T: Send + Sync`, not just `Send`: concurrent readers clone
+out of the same storage at the same time, so `T::clone` must tolerate being
+called from several threads at once. A `Send + !Sync` type such as
+`RefCell<T>` still works in a `Value` on a single thread; the `Value` just
+can't be shared.
 
-`std::thread` is the obvious spawner off wasm32; the example uses
-`wasm_lite_std::spawn` because it is the one spelling that works on both, and
-`worker_doctest!` because the blocking `join` below would trap on the browser's
-main thread.
+(The example spawns with `wasm_lite_std::spawn` rather than `std::thread`
+only so that it also runs in the browser test suite, where `std::thread` and
+blocking `join` on the main thread don't exist.)
 
 ```
 use await_values::Value;
@@ -117,6 +138,74 @@ handle.join().unwrap();
 assert_eq!(value.get(), 42);
 });
 ```
+
+# How It Works
+
+Storage is a double buffer of two slots that alternate roles. Readers clone
+out of the front slot under a shared lock that admits up to 127 concurrent
+readers; a writer fills the back slot and then flips a pointer. Readers never
+block writers, writers never block readers, and only writers serialize with
+each other. Wakeups go through a lock-free Treiber stack of registered wakers,
+ordered so that a `set` racing a poll can't lose a notification.
+
+# Alternatives
+
+The same problem is solved several ways across the ecosystem. The near
+neighbors, and where this crate differs:
+
+**[`tokio::sync::watch`](https://docs.rs/tokio/latest/tokio/sync/watch/)** is
+the same shape: one slot, many waiting readers, latest-value-only delivery.
+It differs in the details. `send` marks every receiver changed whether or not
+the value actually differs (you opt out with `send_if_modified`), where
+`await_values` compares with `PartialEq` before yielding. Reads hand out a
+lock guard, and a `borrow()` held too long — across an `.await`, say — blocks
+the writer; here reads clone the value out, so there is no guard to hold
+wrong. And `Receiver` isn't a `Stream` without the `tokio-stream` wrapper
+crate. If you already depend on tokio and none of that bites, `watch` is a
+fine choice.
+
+**[`futures-signals`](https://crates.io/crates/futures-signals)** is a full
+FRP toolkit: `Mutable`, a `Signal` algebra of `map`/`dedupe`/etc., plus
+signal vectors and maps. Reach for it when you want *derived* state — values
+computed from other values and kept current. `await_values` stops at the
+primitive: one cell, one `Stream`, and ordinary `StreamExt` combinators for
+everything downstream. (Note that its signals deliver duplicates unless you
+add `.dedupe()`; here dedup is the default.)
+
+**[`postage`](https://crates.io/crates/postage)** and
+**[`async-watch`](https://crates.io/crates/async-watch)** offer
+executor-agnostic watch channels with tokio-watch-style semantics —
+sender/receiver split, borrow-guard reads, no equality filtering. Closer in
+spirit to this crate than tokio itself, with the same behavioral differences
+as above.
+
+**Broadcast channels**
+([`tokio::sync::broadcast`](https://docs.rs/tokio/latest/tokio/sync/broadcast/),
+[`async-broadcast`](https://crates.io/crates/async-broadcast)) deliver every
+message to every receiver, and a receiver that falls behind lags or errors.
+That's the right tool when each message is an *event* that must be handled.
+`await_values` is deliberately lossy in exactly that case: an observer that
+wakes late sees only the newest value.
+
+**[`arc-swap`](https://crates.io/crates/arc-swap)** shares the "readers grab
+the latest value without blocking" goal and its reads are faster, but it has
+no notification side — you poll. Pair it with
+[`event-listener`](https://crates.io/crates/event-listener) and some dedup
+logic and you have roughly rebuilt this crate.
+
+Reasons to pick something else: your type can't be `Clone + PartialEq`; every
+read here is a clone, so large payloads want an `Arc<T>` inside the `Value`;
+there is no history, no `send`-style backpressure, and no derived-value
+algebra. Reasons to pick this: watch-style state observation as a plain
+`Stream`, equality dedup by default, four small dependencies with no runtime
+attached, and a test suite that runs on native *and* inside real browsers on
+wasm32.
+
+# Feature Flags
+
+`exfiltrate` (off by default) maintains a process-wide registry of live
+`Value`s and exposes it through the `exfiltrate` debugging tool's `snapshot`
+command. It costs a registry update per `set`.
 */
 
 #[cfg(feature = "exfiltrate")]
