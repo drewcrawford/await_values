@@ -119,6 +119,11 @@ assert_eq!(value.get(), 42);
 ```
 */
 
+#[cfg(feature = "exfiltrate")]
+pub mod exfiltrate_provider;
+#[cfg(feature = "exfiltrate")]
+pub mod registry;
+
 pub mod aggregate;
 pub(crate) mod flip_card;
 
@@ -164,6 +169,9 @@ impl Debug for ActiveObservation {
 
 #[derive(Debug)]
 struct Shared<T> {
+    /// This value's row in the debug registry. See [`registry`].
+    #[cfg(feature = "exfiltrate")]
+    registry_id: u64,
     next_observer_id: AtomicU64,
     value: FlipCard<Option<T>>,
     active_observations: treiber_stack::TreiberStack<Weak<ActiveObservation>>,
@@ -238,9 +246,14 @@ impl<T: Clone> Value<T> {
     /// let value = Value::new("Hello, world!");
     /// assert_eq!(value.get(), "Hello, world!");
     /// ```
+    #[cfg_attr(feature = "exfiltrate", track_caller)]
     pub fn new(value: T) -> Self {
+        #[cfg(feature = "exfiltrate")]
+        let registry_id = registry::record_created(std::panic::Location::caller());
         Self {
             shared: Arc::new(Shared {
+                #[cfg(feature = "exfiltrate")]
+                registry_id,
                 value: FlipCard::new(Some(value)),
                 active_observations: treiber_stack::TreiberStack::default(),
                 next_observer_id: AtomicU64::new(0),
@@ -294,6 +307,8 @@ impl<T: Clone> Value<T> {
         T: Clone,
     {
         let old = self.shared.value.flip_to(Some(value));
+        #[cfg(feature = "exfiltrate")]
+        registry::record_set(self.shared.registry_id);
         self.notify();
         old.expect("Value is hungup")
     }
@@ -331,6 +346,8 @@ impl<T: Clone> Drop for Value<T> {
         // This is done by setting the value to None, which indicates that the value is no
         // longer available.
         self.shared.value.flip_to(None);
+        #[cfg(feature = "exfiltrate")]
+        registry::record_value_dropped(self.shared.registry_id);
         self.notify();
     }
 }
@@ -445,6 +462,8 @@ impl<T> Observer<T> {
             .active_observations
             .push(Arc::downgrade(&active));
         let shared = value.shared.clone();
+        #[cfg(feature = "exfiltrate")]
+        registry::record_observer_created(shared.registry_id);
         Self {
             shared,
             observed: None,
@@ -482,6 +501,8 @@ impl<T> Observer<T> {
         T: Clone,
     {
         let observed = self.shared.value.read();
+        #[cfg(feature = "exfiltrate")]
+        registry::record_observed(self.shared.registry_id);
         if let Some(obs) = observed {
             self.observed = Some(obs.clone());
             Some(obs)
@@ -592,6 +613,8 @@ impl<T> Observer<T> {
 
 impl<T> Drop for Observer<T> {
     fn drop(&mut self) {
+        #[cfg(feature = "exfiltrate")]
+        registry::record_observer_dropped(self.shared.registry_id);
         // When the observer is dropped, we need to remove it from the active observations.
         // This ensures that we don't keep references to dropped observers.
         let mut extra = Vec::new();

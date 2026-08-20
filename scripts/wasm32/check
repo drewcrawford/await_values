@@ -1,4 +1,6 @@
 #!/bin/bash
 set -e
 source "$(dirname "$0")/_env"
+# Second pass with the feature on; the registry is not built at all otherwise.
 RUSTFLAGS="$WASM32_RUSTFLAGS" cargo +nightly check --target=wasm32-unknown-unknown
+RUSTFLAGS="$WASM32_RUSTFLAGS" cargo +nightly check --target=wasm32-unknown-unknown --features exfiltrate

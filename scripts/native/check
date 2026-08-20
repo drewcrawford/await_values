@@ -1,3 +1,5 @@
 #!/bin/bash
 set -e
-RUSTFLAGS="-D warnings" cargo check
+# Second pass with the feature on; the registry is not built at all otherwise.
+RUSTFLAGS="-D warnings" cargo check --all-targets
+RUSTFLAGS="-D warnings" cargo check --all-targets --features exfiltrate

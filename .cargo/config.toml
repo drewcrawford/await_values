@@ -1,3 +1,7 @@
+[net]
+# The optional `exfiltrate` dependency is a Gitea SSH URL.
+git-fetch-with-cli = true
+
 [unstable]
 # Rebuild std with atomics support for wasm32
 build-std = ["std", "panic_abort"]

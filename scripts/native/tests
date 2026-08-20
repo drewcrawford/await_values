@@ -1,3 +1,4 @@
 #!/bin/bash
 set -e
 RUSTFLAGS="-D warnings" cargo test
+RUSTFLAGS="-D warnings" cargo test --features exfiltrate

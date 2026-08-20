@@ -1,3 +1,5 @@
 #!/bin/bash
 set -e
-RUSTFLAGS="-D warnings" cargo clippy
+# Second pass with the feature on; the registry is not built at all otherwise.
+RUSTFLAGS="-D warnings" cargo clippy --all-targets
+RUSTFLAGS="-D warnings" cargo clippy --all-targets --features exfiltrate
