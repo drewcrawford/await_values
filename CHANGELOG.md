@@ -35,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stream looking permanently stale. Normal stream polling now advances the
   observed generation just like `current_value()` does.
 
+- **Cloned observers no longer disappear from diagnostics.** Each clone is an
+  independent subscriber, but the registry only counted observers made
+  directly from a `Value`; dropping a clone then decremented a count it had
+  never incremented. Clone and drop accounting now balance, so
+  `live_observers` stays honest.
+
 ## [0.3.0] - 2026-08-17
 
 ### Breaking Changes

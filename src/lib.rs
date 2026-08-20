@@ -498,6 +498,8 @@ impl<T: Clone> Clone for Observer<T> {
         self.shared
             .active_observations
             .push(Arc::downgrade(&active));
+        #[cfg(feature = "exfiltrate")]
+        registry::record_observer_created(self.shared.registry_id);
         Self {
             active_observation: active,
             shared: self.shared.clone(),

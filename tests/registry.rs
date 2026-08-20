@@ -79,6 +79,13 @@ async fn the_registry_reports_observers_and_staleness_but_never_values() {
     let mut observer = value.observe();
     assert_eq!(u64_of(&row_for(id), "live_observers"), 1);
 
+    // A clone is a fully independent live observer, and dropping it must only
+    // remove that clone from the count.
+    let clone = observer.clone();
+    assert_eq!(u64_of(&row_for(id), "live_observers"), 2);
+    drop(clone);
+    assert_eq!(u64_of(&row_for(id), "live_observers"), 1);
+
     // Setting advances the generation and makes the observer stale.
     value.set(2);
     value.set(3);
