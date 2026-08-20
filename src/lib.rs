@@ -434,10 +434,13 @@ impl<T: Clone> Drop for Value<T> {
         // When the value is dropped, we need to notify all observers that the value is hung up.
         // This is done by setting the value to None, which indicates that the value is no
         // longer available.
-        self.shared.value.flip_to(None);
+        let old = self.shared.value.flip_to(None);
         #[cfg(feature = "exfiltrate")]
         registry::record_value_dropped(self.shared.registry_id);
         self.notify();
+        // Destructors are user code and may panic. Run them only after hangup
+        // is recorded and every pending observer has been woken.
+        drop(old);
     }
 }
 
@@ -895,6 +898,40 @@ mod tests {
         armed.store(false, Ordering::Relaxed);
         assert_eq!(old.value, 0);
         assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
+    }
+
+    /// Hangup must become observable before the stored value's destructor can
+    /// unwind out of `Value::drop`.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn drop_notifies_before_dropping_the_payload() {
+        let armed = Arc::new(AtomicBool::new(true));
+        let value = super::Value::new(DropBomb {
+            value: 0,
+            bomb: true,
+            armed,
+        });
+        let mut observer = value.observe();
+
+        let wakes = Arc::new(WakeCount::default());
+        let waker = Waker::from(Arc::clone(&wakes));
+        let mut cx = Context::from_waker(&waker);
+        assert!(matches!(
+            Stream::poll_next(std::pin::Pin::new(&mut observer), &mut cx),
+            Poll::Ready(Some(_))
+        ));
+        assert!(matches!(
+            Stream::poll_next(std::pin::Pin::new(&mut observer), &mut cx),
+            Poll::Pending
+        ));
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(value)));
+        assert!(result.is_err(), "the payload destructor should still panic");
+        assert_eq!(
+            wakes.0.load(Ordering::Relaxed),
+            1,
+            "the pending observer must be notified before payload destruction"
+        );
     }
 
     #[wasm_lite_test]

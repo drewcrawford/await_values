@@ -47,6 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   visible but notification never happened, leaving a waiting observer asleep.
   Moving the input removes that dangerous gap (and one unnecessary clone).
 
+- **Dropping a `Value` now announces hangup before running `T`'s destructor.**
+  The payload used to be dropped first, so a panicking destructor prevented
+  every pending observer from being woken even though the stored state was
+  already `None`. Hangup bookkeeping and wakeups now finish before user
+  destructor code runs.
+
 ### Security
 
 - **Reader saturation now applies backpressure instead of panicking.** The
