@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never incremented. Clone and drop accounting now balance, so
   `live_observers` stays honest.
 
+- **`set` now moves its input into storage before notifying observers.** It
+  used to clone the owned argument into the back slot and drop the original
+  after flipping. If that destructor panicked, the new state was already
+  visible but notification never happened, leaving a waiting observer asleep.
+  Moving the input removes that dangerous gap (and one unnecessary clone).
+
 ### Security
 
 - **Reader saturation now applies backpressure instead of panicking.** The

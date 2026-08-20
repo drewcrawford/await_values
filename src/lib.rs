@@ -791,7 +791,11 @@ where
 
 #[cfg(test)]
 mod tests {
+    use futures_core::Stream;
     use futures_util::StreamExt;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::task::{Context, Poll, Wake, Waker};
     use wasm_lite::wasm_lite_test;
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -807,6 +811,90 @@ mod tests {
         let old_value = value.set(100);
         assert_eq!(old_value, 42);
         assert_eq!(value.get(), 100);
+    }
+
+    #[derive(Debug)]
+    struct DropBomb {
+        value: u8,
+        bomb: bool,
+        armed: Arc<AtomicBool>,
+    }
+
+    impl Clone for DropBomb {
+        fn clone(&self) -> Self {
+            Self {
+                value: self.value,
+                // Only the caller-owned instance is explosive. This exposes
+                // an implementation that clones and then drops `set`'s owned
+                // argument before it has notified observers.
+                bomb: false,
+                armed: Arc::clone(&self.armed),
+            }
+        }
+    }
+
+    impl PartialEq for DropBomb {
+        fn eq(&self, other: &Self) -> bool {
+            self.value == other.value
+        }
+    }
+
+    impl Drop for DropBomb {
+        fn drop(&mut self) {
+            if self.bomb && self.armed.load(Ordering::Relaxed) {
+                panic!("set dropped its owned input");
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct WakeCount(AtomicUsize);
+
+    impl Wake for WakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// `set` owns its argument. Moving it into storage avoids a panicking
+    /// destructor between the visible state change and observer notification.
+    #[wasm_lite_test]
+    fn set_moves_its_input_before_notifying() {
+        let armed = Arc::new(AtomicBool::new(true));
+        let value = super::Value::new(DropBomb {
+            value: 0,
+            bomb: false,
+            armed: Arc::clone(&armed),
+        });
+        let mut observer = value.observe();
+
+        let wakes = Arc::new(WakeCount::default());
+        let waker = Waker::from(Arc::clone(&wakes));
+        let mut cx = Context::from_waker(&waker);
+        assert!(matches!(
+            Stream::poll_next(std::pin::Pin::new(&mut observer), &mut cx),
+            Poll::Ready(Some(_))
+        ));
+        assert!(matches!(
+            Stream::poll_next(std::pin::Pin::new(&mut observer), &mut cx),
+            Poll::Pending
+        ));
+
+        let old = value.set(DropBomb {
+            value: 1,
+            bomb: true,
+            armed: Arc::clone(&armed),
+        });
+
+        // The bomb is now the stored value; disarm it before assertions so a
+        // failing assertion cannot cause a second panic during unwinding.
+        armed.store(false, Ordering::Relaxed);
+        assert_eq!(old.value, 0);
+        assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
     }
 
     #[wasm_lite_test]

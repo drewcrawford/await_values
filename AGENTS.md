@@ -95,10 +95,12 @@ These are spread across files and are easy to violate by accident:
   Requiring only `Send` was a soundness hole (safe code could race a
   `Value<RefCell<i32>>`); Miri catches it if it regresses.
 
-- **`ReadGuard`/`WriteGuard` release the slot locks on unwind**, so a panicking
-  `T::clone` cannot leave a lock held — which would spin every later writer (or
-  reader) forever. This does nothing on wasm32, which is `panic-strategy =
-  "abort"`; see the note on `ReadGuard`.
+- **`ReadGuard` releases the slot's read lock on unwind**, so a panicking
+  `T::clone` cannot leave a lock held and spin every later writer forever.
+  Writes move their owned input and run no user code while the slot is locked;
+  `WriteGuard` remains defense against a future unwind point. Unwind guards do
+  nothing on wasm32, which is `panic-strategy = "abort"`; see the note on
+  `ReadGuard`.
 
 ## Test conventions
 

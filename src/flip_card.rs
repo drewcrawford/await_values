@@ -170,30 +170,28 @@ impl<T> Slot<T> {
 
     /// Attempts to acquire a write lock and replace the data.
     ///
-    /// Returns `Some(old_data)` if successful, `None` if the slot is locked.
+    /// Returns the old data if successful, or gives ownership of `data` back
+    /// if the slot is locked so the caller can retry without cloning it.
     ///
     /// # Safety
     ///
     /// This operation requires exclusive access (no readers or writers).
-    fn try_write(&self, data: &T) -> Option<T>
-    where
-        T: Clone,
-    {
+    fn try_write(&self, data: T) -> Result<T, T> {
         let r = self
             .atomic
             .compare_exchange(UNLOCKED, WRITE, Ordering::Acquire, Ordering::Relaxed);
         match r {
             Ok(_) => {
-                // Successfully acquired write lock. The guard releases it even if
-                // `T::clone` panics; the clone is evaluated before `replace` runs,
-                // so an unwinding clone leaves the slot's old value in place and
-                // the front/back invariant intact.
+                // Successfully acquired the write lock. Keep the guard around
+                // the unsafe replacement so future changes cannot accidentally
+                // leak the lock during an unwind.
                 let _guard = WriteGuard(&self.atomic);
-                Some(unsafe { std::ptr::replace(self.data.get(), data.clone()) })
+                Ok(unsafe { std::ptr::replace(self.data.get(), data) })
             }
             Err(_) => {
-                // Failed to acquire write lock
-                None
+                // Failed to acquire the write lock; return the input so a
+                // retry does not need to clone it.
+                Err(data)
             }
         }
     }
@@ -206,21 +204,18 @@ impl<T> Slot<Option<T>> {
     /// # Returns
     ///
     /// The previous value in the slot.
-    fn take(&self) -> Option<T>
-    where
-        T: Clone,
-    {
+    fn take(&self) -> Option<T> {
         loop {
-            let r = self.try_write(&None);
-            match r {
-                Some(old_data) => {
+            match self.try_write(None) {
+                Ok(old_data) => {
                     // Successfully took the data
                     return old_data;
                 }
-                None => {
+                Err(None) => {
                     // Failed to take the data, retry
                     std::hint::spin_loop();
                 }
+                Err(Some(_)) => unreachable!("try_write returns its input on contention"),
             }
         }
     }
@@ -353,27 +348,32 @@ impl<T> FlipCard<T> {
     /// 2. Attempt to write the new value to the inactive slot
     /// 3. Atomically flip the read pointer to the newly written slot
     /// 4. Extract and return the old value from the now-inactive slot
-    pub fn flip_to(&self, data: T) -> T
-    where
-        T: Clone,
-    {
-        let opt_data = Some(data);
+    pub fn flip_to(&self, data: T) -> T {
+        let mut opt_data = Some(data);
         let _guard = self.write_lock.lock_sync();
         loop {
             let read_0 = self.read_data_0.load(Ordering::Relaxed);
             if read_0 {
                 // we want to write into slot 1
-                if self.data1.try_write(&opt_data).is_some() {
-                    self.read_data_0.store(false, Ordering::Release);
-                    // Successfully wrote to slot 1, now read from slot 0
-                    return self.data0.take().expect("Prior value");
+                match self.data1.try_write(opt_data) {
+                    Ok(prior) => {
+                        assert!(prior.is_none(), "back slot must be empty");
+                        self.read_data_0.store(false, Ordering::Release);
+                        // Successfully wrote to slot 1, now read from slot 0
+                        return self.data0.take().expect("Prior value");
+                    }
+                    Err(data) => opt_data = data,
                 }
             } else {
                 // we want to write into slot 0
-                if self.data0.try_write(&opt_data).is_some() {
-                    self.read_data_0.store(true, Ordering::Release);
-                    // Successfully wrote to slot 0, now read from slot 1
-                    return self.data1.take().expect("Prior value");
+                match self.data0.try_write(opt_data) {
+                    Ok(prior) => {
+                        assert!(prior.is_none(), "back slot must be empty");
+                        self.read_data_0.store(true, Ordering::Release);
+                        // Successfully wrote to slot 0, now read from slot 1
+                        return self.data1.take().expect("Prior value");
+                    }
+                    Err(data) => opt_data = data,
                 }
             }
             std::hint::spin_loop();
@@ -696,15 +696,15 @@ mod tests {
 
     /// A value whose `Clone` panics on demand.
     ///
-    /// The two tests below are the only ones here that stay native-only. They
-    /// assert that [`ReadGuard`]/[`WriteGuard`] release during an unwind, and
+    /// The test below is the only one here that stays native-only. It asserts
+    /// that [`ReadGuard`] releases during an unwind, and
     /// `wasm32-unknown-unknown` is `panic-strategy = "abort"` — nothing
     /// unwinds, so no destructor runs and the behaviour under test does not
     /// hold there. See [`ReadGuard`] for what that costs a wasm32 caller.
     ///
     /// This is a missing-unwind limitation, not a permanent one: if wasm_lite
-    /// ships the `panic = "unwind"` mode on its roadmap, these should be
-    /// revisited as `#[wasm_lite_test(worker)]` cases.
+    /// ships the `panic = "unwind"` mode on its roadmap, it should be revisited
+    /// as a `#[wasm_lite_test(worker)]` case.
     #[cfg(not(target_arch = "wasm32"))]
     mod fussy {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -712,13 +712,12 @@ mod tests {
 
         pub static BOOM: AtomicBool = AtomicBool::new(false);
 
-        /// Serializes the tests that arm [`BOOM`].
+        /// Serializes any test that arms [`BOOM`].
         ///
         /// Both the flag and the panic hook `expect_panic` swaps are
-        /// process-wide, and libtest runs tests in parallel. Without this, one
-        /// test disarming `BOOM` lands in the middle of the other's panicking
-        /// clone — which then does not panic, failing an assertion that has
-        /// nothing to do with the code under test.
+        /// process-wide, and libtest runs tests in parallel. Keep the gate even
+        /// with one current caller so another panic-path test cannot later be
+        /// added without the required serialization.
         static GATE: Mutex<()> = Mutex::new(());
 
         /// Holds the gate for the caller's whole test body.
@@ -810,42 +809,6 @@ mod tests {
             "flip_to never completed: read lock leaked on unwind"
         );
         assert_eq!(card.read(), Fussy(2));
-    }
-
-    /// A `T::clone` that unwinds out of `flip_to` must not leak the write lock,
-    /// and must leave the written-to slot untouched so the front slot still
-    /// holds a value.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn panicking_clone_does_not_leak_write_lock() {
-        use fussy::{BOOM, Fussy};
-        let _gate = fussy::gate();
-
-        let card = Arc::new(FlipCard::new(Fussy(1)));
-
-        BOOM.store(true, Ordering::Relaxed);
-        expect_panic({
-            let card = Arc::clone(&card);
-            move || {
-                card.flip_to(Fussy(2));
-            }
-        });
-        BOOM.store(false, Ordering::Relaxed);
-
-        // The failed write left the original value in place, in the slot that
-        // was already the front one - so this read succeeds either way.
-        assert_eq!(card.read(), Fussy(1));
-
-        // ...but the *next* write targets the slot the panic aborted in, and
-        // spins forever if that slot is still flagged WRITE.
-        let writer = Arc::clone(&card);
-        assert!(
-            finishes(move || {
-                assert_eq!(writer.flip_to(Fussy(3)), Fussy(1));
-            }),
-            "flip_to never completed: write lock leaked on unwind"
-        );
-        assert_eq!(card.read(), Fussy(3));
     }
 
     #[wasm_lite_test(worker)]
