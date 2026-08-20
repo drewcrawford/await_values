@@ -35,6 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supposedly created from. Use `Observer::from(&value)` (or the existing
   `value.observe()`) so the producer remains alive.
 
+- **`Value` equality and hashing now describe slot identity, not mutable
+  contents.** A `set` used to change a `Value`'s hash through a shared
+  reference, making an existing hash-map/set entry unreachable; concurrent
+  updates could also break `Eq`'s equivalence promise. Identity is stable for
+  the slot's lifetime. Compare or hash `value.get()` when snapshot contents are
+  what matter.
+
 ### Fixed
 
 - **Stream consumers now count as caught up in value diagnostics.** Polling an

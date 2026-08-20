@@ -346,6 +346,13 @@ impl<T> Shared<T> {
 /// `Value` does not implement `Clone` because it also implements `Drop`, which would require
 /// reference counting to ensure that the value is not dropped while there are still observers.
 /// If you need to share a `Value` across multiple owners, wrap it in `Arc`.
+///
+/// # Equality and hashing
+///
+/// `Value`s compare and hash by observable-slot identity, not by their mutable
+/// contents. Identity stays stable across [`set`](Self::set), so an
+/// `Arc<Value<T>>` remains a valid hash-map or hash-set key after updates. To
+/// compare or hash snapshots of the contents, call [`get`](Self::get) first.
 
 /*
 Design note - the problem with making this Clone is that it also implements Drop, which would require
@@ -847,23 +854,17 @@ where
     }
 }
 
-impl<T> PartialEq for Value<T>
-where
-    T: PartialEq + Clone,
-{
+impl<T: Clone> PartialEq for Value<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.get() == other.get()
+        Arc::ptr_eq(&self.shared, &other.shared)
     }
 }
 
-impl<T> Eq for Value<T> where T: Eq + Clone {}
+impl<T: Clone> Eq for Value<T> {}
 
-impl<T> std::hash::Hash for Value<T>
-where
-    T: std::hash::Hash + Clone,
-{
+impl<T: Clone> std::hash::Hash for Value<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.get().hash(state);
+        std::ptr::hash(Arc::as_ptr(&self.shared), state);
     }
 }
 
@@ -1183,59 +1184,32 @@ mod tests {
     }
 
     #[wasm_lite_test]
-    fn test_value_partialeq() {
+    fn test_value_identity_equality() {
         let value1 = super::Value::new(42);
         let value2 = super::Value::new(42);
-        let value3 = super::Value::new(100);
 
-        assert_eq!(value1, value2);
-        assert_ne!(value1, value3);
+        assert_eq!(value1, value1);
+        assert_ne!(value1, value2);
 
         value2.set(100);
-        assert_eq!(value2, value3);
-        assert_ne!(value1, value2);
+        assert_ne!(value1, value2, "contents do not define slot identity");
     }
 
     #[wasm_lite_test]
-    fn test_value_hash() {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
+    // The whole regression is that this interior-mutable key now has stable,
+    // identity-based Eq/Hash; Clippy cannot infer those implementations.
+    #[allow(clippy::mutable_key_type)]
+    fn test_value_hash_is_stable_across_set() {
+        use std::collections::HashSet;
 
-        let value1 = super::Value::new(42);
-        let value2 = super::Value::new(42);
-        let value3 = super::Value::new(100);
+        let value = Arc::new(super::Value::new(42));
+        let mut set = HashSet::new();
+        set.insert(Arc::clone(&value));
 
-        let mut hasher1 = DefaultHasher::new();
-        value1.hash(&mut hasher1);
-        let hash1 = hasher1.finish();
-
-        let mut hasher2 = DefaultHasher::new();
-        value2.hash(&mut hasher2);
-        let hash2 = hasher2.finish();
-
-        let mut hasher3 = DefaultHasher::new();
-        value3.hash(&mut hasher3);
-        let hash3 = hasher3.finish();
-
-        assert_eq!(hash1, hash2, "Equal values should have equal hashes");
-        assert_ne!(
-            hash1, hash3,
-            "Different values should have different hashes"
-        );
-
-        // Test that hash changes when value changes
-        value2.set(100);
-        let mut hasher4 = DefaultHasher::new();
-        value2.hash(&mut hasher4);
-        let hash4 = hasher4.finish();
-
-        assert_eq!(
-            hash3, hash4,
-            "Value with same content should have same hash"
-        );
-        assert_ne!(
-            hash1, hash4,
-            "Value after update should have different hash"
+        value.set(100);
+        assert!(
+            set.contains(&value),
+            "mutating a key must not make its hash-table entry unreachable"
         );
     }
 
