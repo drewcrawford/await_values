@@ -136,9 +136,8 @@ impl<T> Slot<T> {
     ///
     /// Returns `Some(data)` if successful, `None` if a write lock is held.
     ///
-    /// # Panics
-    ///
-    /// Panics if the maximum number of readers (127) is reached.
+    /// A saturated reader count is treated like write contention: the caller
+    /// receives `None` and retries after another reader releases its slot.
     fn try_read(&self) -> Option<T>
     where
         T: Clone,
@@ -150,8 +149,9 @@ impl<T> Slot<T> {
                     // If the WRITE bit is set, we cannot read
                     None
                 } else if value == READ {
-                    //maximum number of readers reached
-                    panic!("Maximum number of readers reached");
+                    // The reader count is saturated. Back off until a reader
+                    // leaves rather than panicking in safe code.
+                    None
                 } else {
                     // Otherwise, we can read
                     Some(value + 1) // Increment the reader count
@@ -494,6 +494,15 @@ mod tests {
         let old = card.flip_to(100);
         assert_eq!(old, 42);
         assert_eq!(card.read(), 100);
+    }
+
+    /// Reaching the representable reader limit is transient contention, not a
+    /// caller error, and must not turn safe reads into a process-wide panic.
+    #[wasm_lite_test]
+    fn saturated_reader_count_backs_off() {
+        let slot = Slot::new(42);
+        slot.atomic.store(READ, Ordering::Relaxed);
+        assert_eq!(slot.try_read(), None);
     }
 
     /// Test that FlipCard works with different types

@@ -41,6 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never incremented. Clone and drop accounting now balance, so
   `live_observers` stays honest.
 
+### Security
+
+- **Reader saturation now applies backpressure instead of panicking.** The
+  packed slot lock can represent 127 simultaneous readers; reader 128 used to
+  panic inside otherwise safe `Value::get` or observer code. That made enough
+  concurrent, slow `Clone` calls a denial-of-service primitive. A saturated
+  reader now waits for capacity exactly as it already waits for a writer.
+
 ## [0.3.0] - 2026-08-17
 
 ### Breaking Changes
