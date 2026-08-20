@@ -10,6 +10,8 @@ use crate::registry;
 /// Registers the `values` subsystem. Idempotent.
 ///
 /// ```no_run
+/// # // no_run because: `begin` opens exfiltrate's listening socket and installs
+/// # // process-global state, which a doctest process must not do.
 /// exfiltrate::begin();
 /// await_values::exfiltrate_provider::install();
 /// ```

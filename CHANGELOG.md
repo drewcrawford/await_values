@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-08-20
+
+### Added
+
+- **A `Value` can now be asked whether anyone is listening.** Behind the
+  optional `exfiltrate` feature, `snapshot --subsystem values` answers two
+  questions nothing else in the process could. A value with zero observers is a
+  publisher nobody subscribed to — a wiring mistake that raises no error and
+  produces no output, just silence. And an observer that has not caught up to
+  the current generation is stale; one that stays stale has stopped polling.
+
+  It never reports a value. Rows carry the generation and when the value last
+  changed, never what it holds — enough to answer staleness, and unable to leak
+  application data. That is also what the types allow: `T` is only `Clone`, not
+  `Debug`, so rendering one would mean widening a bound on every user of the
+  crate to serve a debugging feature.
+
+  `never_changed` and `since_change_ms` are mutually exclusive, so "never set
+  since construction" cannot be misread as "unchanged for a while".
+
 ## [Unreleased]
 
 ## [0.3.0] - 2026-08-17

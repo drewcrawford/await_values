@@ -1,4 +1,4 @@
-# matrix v12
+# matrix v13
 # The marker above is the generation. Bump it in a project's copy only when
 # this template has been merged forward into it — that is the only record that
 # this generation was reconciled. Steps and matrix entries of the project's own
@@ -31,10 +31,10 @@ jobs:
         # If so, they should be preserved
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache target
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           key: target-${{ github.event.repository.name }}-${{ matrix.os }}-${{ matrix.target || 'host' }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           path: |
