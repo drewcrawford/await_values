@@ -1,5 +1,4 @@
 [net]
-# The optional `exfiltrate` dependency is a Gitea SSH URL.
 git-fetch-with-cli = true
 
 [unstable]
