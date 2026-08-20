@@ -80,6 +80,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code ran. `scripts/miri` disables that one setting for Miri while leaving the
   browser build untouched.
 
+- **Concurrency stress tests now finish under Miri.** Native and browser runs
+  keep their existing load; interpreted runs use smaller thread and iteration
+  counts, enough to exercise the synchronization without spending minutes
+  replaying the same million-iteration loop. Async tests retain an `Arc<Value>`
+  instead of intentionally leaking their producer, so Miri's leak check stays
+  useful too.
+
 ### Security
 
 - **Reader saturation now applies backpressure instead of panicking.** The

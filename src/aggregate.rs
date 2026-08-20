@@ -274,6 +274,7 @@ mod tests {
     use super::AggregateObserver;
     use crate::Value;
     use futures_util::StreamExt;
+    use std::sync::Arc;
     use wasm_lite::wasm_lite_test;
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -285,7 +286,7 @@ mod tests {
 
     #[wasm_lite_test]
     async fn test_aggregate_observer() {
-        let value = Value::new(2);
+        let value = Arc::new(Value::new(2));
         let value2 = Value::new(0.3);
 
         let mut o = AggregateObserver::new();
@@ -295,19 +296,17 @@ mod tests {
         let _ = o.next().await;
         let _ = o.next().await;
 
+        let writer = Arc::clone(&value);
         thread::spawn(move || {
             thread::sleep(std::time::Duration::from_millis(100));
-            let value = value;
-            value.set(3);
-            //don't hangup
-            std::mem::forget(value);
+            writer.set(3);
         });
         _ = o.next().await;
     }
 
     #[wasm_lite_test]
     async fn test_repeat_values() {
-        let v = Value::new(0);
+        let v = Arc::new(Value::new(0));
         let mut o = AggregateObserver::new();
         o.add_observer(v.observe());
         let o1 = o.next().await;
@@ -321,15 +320,13 @@ mod tests {
         // under 50ms even though nothing went wrong.
         let begin = Instant::now();
 
+        let writer = Arc::clone(&v);
         thread::spawn(move || {
-            let v = v;
             for _ in 0..5 {
                 thread::sleep(std::time::Duration::from_millis(10));
-                v.set(0);
+                writer.set(0);
             }
-            v.set(1);
-            //don't hangup
-            std::mem::forget(v);
+            writer.set(1);
         });
 
         let o2 = o.next().await;

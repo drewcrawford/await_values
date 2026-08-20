@@ -1129,7 +1129,7 @@ mod tests {
 
     #[wasm_lite_test]
     async fn test_observer_next() {
-        let value = super::Value::new(42);
+        let value = Arc::new(super::Value::new(42));
         let mut observer = value.observe();
         assert_eq!(observer.current_value().unwrap(), 42);
 
@@ -1139,10 +1139,10 @@ mod tests {
         assert_eq!(next_value, 100);
 
         //read first
+        let writer = Arc::clone(&value);
         thread::spawn(move || {
             thread::sleep(std::time::Duration::from_millis(100));
-            value.set(200);
-            std::mem::forget(value); //don't hangup
+            writer.set(200);
         });
         //wait for next
         let next_value = observer.next().await.unwrap();

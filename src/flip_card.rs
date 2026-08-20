@@ -447,16 +447,22 @@ mod tests {
     /// browser runs are deliberately smaller: enough concurrency to interleave
     /// readers and writers, but not so much that the suite outruns the runner's
     /// page deadline.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(miri)))]
     const THREADS: usize = 10;
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(miri)))]
+    const THREADS: usize = 4;
+    #[cfg(miri)]
     const THREADS: usize = 4;
 
     /// Iterations per thread in the write-stress tests. Scaled for the same reason.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), not(miri)))]
     const STRESS: u64 = 100_000;
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(miri)))]
     const STRESS: u64 = 2_000;
+    /// Miri explores the same interleavings under interpretation; native-scale
+    /// million-iteration loops add minutes without adding meaningful coverage.
+    #[cfg(miri)]
+    const STRESS: u64 = 100;
 
     /// Blocks every participant until all of them have arrived.
     ///
