@@ -102,13 +102,21 @@ async fn the_registry_reports_observers_and_staleness_but_never_values() {
     assert_eq!(u64_of(&row, "stale_by"), 0);
 
     // Stream consumption is observation too; callers should not have to use
-    // the synchronous side channel just to keep diagnostics accurate.
+    // the synchronous side channel just to keep diagnostics accurate. Keep a
+    // second observer behind to make sure one fast consumer cannot hide it.
+    let mut lagging = observer.clone();
     value.set(4);
     assert_eq!(u64_of(&row_for(id), "stale_by"), 1);
     assert_eq!(observer.next().await, Some(4));
     let row = row_for(id);
+    assert_eq!(u64_of(&row, "observed_generation"), 2);
+    assert_eq!(u64_of(&row, "stale_by"), 1);
+
+    assert_eq!(lagging.next().await, Some(4));
+    let row = row_for(id);
     assert_eq!(u64_of(&row, "observed_generation"), 3);
     assert_eq!(u64_of(&row, "stale_by"), 0);
+    drop(lagging);
 
     // Dropping the observer is visible, and so is dropping the value.
     drop(observer);

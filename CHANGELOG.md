@@ -43,6 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stream looking permanently stale. Normal stream polling now advances the
   observed generation just like `current_value()` does.
 
+- **One fast observer no longer hides a lagging one in diagnostics.** The
+  registry kept one shared "latest observed" generation, so any consumer that
+  caught up made `stale_by` zero even while another live consumer was stuck far
+  behind. It now tracks generations per observer and reports the oldest live
+  generation—the subscriber that actually needs attention.
+
 - **Cloned observers no longer disappear from diagnostics.** Each clone is an
   independent subscriber, but the registry only counted observers made
   directly from a `Value`; dropping a clone then decremented a count it had

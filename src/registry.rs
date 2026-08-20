@@ -32,7 +32,7 @@
 //! Behind the `exfiltrate` feature; with it off none of this is compiled and
 //! `set` does not touch a lock.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::panic::Location;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -64,8 +64,11 @@ pub struct Entry {
     pub last_change: Option<Instant>,
     /// Observers created from this value that have not been dropped.
     pub live_observers: u64,
-    /// The highest generation any observer has caught up to. The gap to
-    /// `generation` is how far the furthest-behind reader could be.
+    /// The oldest generation held by any live observer. The gap to
+    /// `generation` is how far the furthest-behind reader is.
+    ///
+    /// When there are no live observers, this retains the last observed
+    /// generation; consult [`live_observers`](Self::live_observers) first.
     pub observed_generation: u64,
     /// Whether the value still exists. A dropped value with live observers is
     /// a publisher that went away underneath its readers.
@@ -73,7 +76,10 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// Generations produced but not yet observed by anyone.
+    /// Generations the furthest-behind live observer has not yet seen.
+    ///
+    /// When [`live_observers`](Self::live_observers) is zero, this is historical
+    /// rather than the staleness of a current subscriber.
     pub fn stale_by(&self) -> u64 {
         self.generation.saturating_sub(self.observed_generation)
     }
@@ -82,6 +88,8 @@ impl Entry {
 struct Registry {
     capacity: usize,
     entries: VecDeque<Entry>,
+    /// Last generation observed by each `(value id, observer id)` pair.
+    observer_generations: HashMap<u64, HashMap<u64, u64>>,
 }
 
 impl Registry {
@@ -97,11 +105,81 @@ impl Registry {
                 .iter()
                 .position(|entry| !entry.alive)
                 .unwrap_or(0);
-            self.entries.remove(victim);
+            let removed = self.entries.remove(victim).expect("victim exists");
+            self.observer_generations.remove(&removed.id);
             forgotten += 1;
         }
         self.entries.push_back(entry);
         forgotten
+    }
+
+    fn recompute_observed_generation(&mut self, id: u64) {
+        let oldest = self
+            .observer_generations
+            .get(&id)
+            .and_then(|observers| observers.values().min())
+            .copied();
+        if let Some(oldest) = oldest
+            && let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id)
+        {
+            entry.observed_generation = oldest;
+        }
+    }
+
+    fn observer_created(&mut self, id: u64, observer_id: u64, observed_generation: u64) {
+        if !self.entries.iter().any(|entry| entry.id == id) {
+            return;
+        }
+        let replaced = self
+            .observer_generations
+            .entry(id)
+            .or_default()
+            .insert(observer_id, observed_generation);
+        if replaced.is_none()
+            && let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id)
+        {
+            entry.live_observers += 1;
+        }
+        self.recompute_observed_generation(id);
+    }
+
+    fn observer_observed(&mut self, id: u64, observer_id: u64) -> Option<u64> {
+        let generation = self.entries.iter().find(|entry| entry.id == id)?.generation;
+        let replaced = self
+            .observer_generations
+            .entry(id)
+            .or_default()
+            .insert(observer_id, generation);
+        // If observer creation lost the registry's non-blocking lock race, a
+        // later successful observation repairs both pieces of bookkeeping.
+        if replaced.is_none()
+            && let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id)
+        {
+            entry.live_observers += 1;
+        }
+        self.recompute_observed_generation(id);
+        Some(generation)
+    }
+
+    fn observer_dropped(&mut self, id: u64, observer_id: u64) {
+        let (removed, now_empty) = self
+            .observer_generations
+            .get_mut(&id)
+            .map(|observers| {
+                let removed = observers.remove(&observer_id).is_some();
+                (removed, observers.is_empty())
+            })
+            .unwrap_or((false, false));
+        if !removed {
+            return;
+        }
+        if now_empty {
+            self.observer_generations.remove(&id);
+        }
+        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) {
+            entry.live_observers = entry.live_observers.saturating_sub(1);
+        }
+        self.recompute_observed_generation(id);
     }
 }
 
@@ -124,6 +202,7 @@ fn with<R>(f: impl FnOnce(&mut Registry) -> R) -> Option<R> {
     let registry = guard.get_or_insert_with(|| Registry {
         capacity: configured_capacity(),
         entries: VecDeque::new(),
+        observer_generations: HashMap::new(),
     });
     Some(f(registry))
 }
@@ -166,19 +245,21 @@ pub(crate) fn record_set(id: u64) {
     });
 }
 
-pub(crate) fn record_observer_created(id: u64) {
-    update(id, |entry| entry.live_observers += 1);
+pub(crate) fn record_observer_created(id: u64, observer_id: u64, observed_generation: u64) {
+    let _ = with(|registry| {
+        registry.observer_created(id, observer_id, observed_generation);
+    });
 }
 
-pub(crate) fn record_observer_dropped(id: u64) {
-    update(id, |entry| {
-        entry.live_observers = entry.live_observers.saturating_sub(1);
+pub(crate) fn record_observer_dropped(id: u64, observer_id: u64) {
+    let _ = with(|registry| {
+        registry.observer_dropped(id, observer_id);
     });
 }
 
 /// Records that an observer has caught up to the value's current generation.
-pub(crate) fn record_observed(id: u64) {
-    update(id, |entry| entry.observed_generation = entry.generation);
+pub(crate) fn record_observed(id: u64, observer_id: u64) -> Option<u64> {
+    with(|registry| registry.observer_observed(id, observer_id)).flatten()
 }
 
 pub(crate) fn record_value_dropped(id: u64) {
@@ -242,6 +323,7 @@ mod tests {
         Registry {
             capacity,
             entries: VecDeque::new(),
+            observer_generations: HashMap::new(),
         }
     }
 
@@ -279,16 +361,32 @@ mod tests {
         assert_eq!(entry.stale_by(), 0, "a race must not underflow");
     }
 
-    /// An observer count that went to zero and back is not negative in between.
+    /// A fast observer cannot hide another live observer that is behind.
     #[test]
-    fn dropping_more_observers_than_exist_saturates() {
+    fn observed_generation_tracks_the_oldest_live_observer() {
+        let mut registry = registry(4);
+        let mut value = entry(1, true);
+        value.generation = 5;
+        registry.push(value);
+        registry.observer_created(1, 10, 2);
+        registry.observer_created(1, 11, 2);
+
+        assert_eq!(registry.observer_observed(1, 10), Some(5));
+        assert_eq!(registry.entries[0].observed_generation, 2);
+        assert_eq!(registry.entries[0].stale_by(), 3);
+
+        assert_eq!(registry.observer_observed(1, 11), Some(5));
+        assert_eq!(registry.entries[0].observed_generation, 5);
+        assert_eq!(registry.entries[0].stale_by(), 0);
+    }
+
+    /// A missed/duplicate drop must not decrement some other observer's count.
+    #[test]
+    fn dropping_an_unknown_observer_does_not_change_the_live_count() {
         let mut registry = registry(4);
         registry.push(entry(1, true));
-        // Simulated directly: the public path cannot produce this, but a
-        // saturating counter is cheaper than reasoning about whether it can.
-        let entry = registry.entries.front_mut().unwrap();
-        entry.live_observers = 0;
-        entry.live_observers = entry.live_observers.saturating_sub(1);
-        assert_eq!(entry.live_observers, 0);
+        registry.observer_created(1, 10, 0);
+        registry.observer_dropped(1, 999);
+        assert_eq!(registry.entries[0].live_observers, 1);
     }
 }

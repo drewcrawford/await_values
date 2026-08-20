@@ -515,6 +515,9 @@ pub struct Observer<T> {
     //The value last observed.
     observed: Option<T>,
     observer_id: u64,
+    /// Registry generation corresponding to `observed`.
+    #[cfg(feature = "exfiltrate")]
+    observed_generation: u64,
 }
 
 impl<T: Clone> Clone for Observer<T> {
@@ -536,12 +539,18 @@ impl<T: Clone> Clone for Observer<T> {
             .active_observations
             .push(Arc::downgrade(&active));
         #[cfg(feature = "exfiltrate")]
-        registry::record_observer_created(self.shared.registry_id);
+        registry::record_observer_created(
+            self.shared.registry_id,
+            observer_id,
+            self.observed_generation,
+        );
         Self {
             active_observation: active,
             shared: self.shared.clone(),
             observed: self.observed.clone(),
             observer_id,
+            #[cfg(feature = "exfiltrate")]
+            observed_generation: self.observed_generation,
         }
     }
 }
@@ -591,12 +600,14 @@ impl<T> Observer<T> {
             .push(Arc::downgrade(&active));
         let shared = value.shared.clone();
         #[cfg(feature = "exfiltrate")]
-        registry::record_observer_created(shared.registry_id);
+        registry::record_observer_created(shared.registry_id, observer_id, 0);
         Self {
             shared,
             observed: None,
             observer_id,
             active_observation: active,
+            #[cfg(feature = "exfiltrate")]
+            observed_generation: 0,
         }
     }
 
@@ -630,7 +641,11 @@ impl<T> Observer<T> {
     {
         let observed = self.shared.value.read();
         #[cfg(feature = "exfiltrate")]
-        registry::record_observed(self.shared.registry_id);
+        if let Some(generation) =
+            registry::record_observed(self.shared.registry_id, self.observer_id)
+        {
+            self.observed_generation = generation;
+        }
         if let Some(obs) = observed {
             self.observed = Some(obs.clone());
             Some(obs)
@@ -657,7 +672,11 @@ impl<T> Observer<T> {
     {
         let observe = self.shared.value.read();
         #[cfg(feature = "exfiltrate")]
-        registry::record_observed(self.shared.registry_id);
+        if let Some(generation) =
+            registry::record_observed(self.shared.registry_id, self.observer_id)
+        {
+            self.observed_generation = generation;
+        }
         if let Some(observe) = observe {
             //determine if new or not
             if let Some(last) = &self.observed {
@@ -744,7 +763,7 @@ impl<T> Observer<T> {
 impl<T> Drop for Observer<T> {
     fn drop(&mut self) {
         #[cfg(feature = "exfiltrate")]
-        registry::record_observer_dropped(self.shared.registry_id);
+        registry::record_observer_dropped(self.shared.registry_id, self.observer_id);
         // When the observer is dropped, we need to remove it from the active observations.
         // This ensures that we don't keep references to dropped observers.
         let mut extra = Vec::new();
