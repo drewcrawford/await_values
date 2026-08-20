@@ -4,8 +4,8 @@ Primitives for subscribing to / notifying about changes to values.
 
 ![logo](art/logo.png)
 
-A `Value<T>` holds a `T`. Any number of `Observer`s — each a
-`futures_core::Stream` — can await changes to it, from any thread, on
+A [`Value<T>`](Value) holds a `T`. Any number of `Observer`s — each a
+[`Stream`](futures_core::Stream) — can await changes to it, from any thread, on
 any executor. Set the value and every observer wakes and yields the new value;
 drop the `Value` and every observer's stream ends.
 
@@ -24,12 +24,12 @@ Your value type needs to be:
 
 The cast of characters:
 * `Value` — owns the storage. Not `Clone`; wrap it in an `Arc` to share
-  (which is why `set` takes `&self`). `get` and
+  (which is why [`set`](Value::set) takes `&self`). [`get`](Value::get) and
   `set` also work directly, with no observer involved.
 * `Observer` — a `Stream` of distinct values, created by
-  `Value::observe`. The first poll yields the current value immediately;
-  later polls wait for a change. `current_value`
-  and `is_dirty` cover the non-async cases.
+  `observe`. The first poll yields the current value immediately;
+  later polls wait for a change. [`current_value`](Observer::current_value)
+  and [`is_dirty`](Observer::is_dirty) cover the non-async cases.
 * `aggregate::AggregateObserver` — bundles observers of *different* types
   into one stream that yields the index of whichever changed.
 
