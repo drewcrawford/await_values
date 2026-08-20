@@ -14,6 +14,7 @@ scripts/check              # cargo check  (native + wasm32)
 scripts/clippy             # clippy       (native + wasm32)
 scripts/docs               # rustdoc      (native + wasm32)
 scripts/tests              # tests        (native + wasm32)
+scripts/miri test --lib    # Miri         (native; disables wasm build-std)
 ```
 
 Each of `check`/`clippy`/`docs`/`tests` is a thin wrapper over `scripts/native/<x>`
@@ -24,6 +25,11 @@ set `-D warnings`.
 cargo test test_name                        # single native test
 cargo test --doc "Value<T>::get"            # single doctest
 ```
+
+Use `scripts/miri`, not a bare `cargo +nightly miri`, inside this repository.
+Miri supplies its own custom sysroot; the wrapper prevents the unconditional
+wasm32 `build-std` config from also rebuilding `core` during Miri setup, which
+otherwise fails with duplicate `rmeta` candidates on a clean Miri cache.
 
 ## wasm32 is a real browser
 

@@ -61,6 +61,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already `None`. Hangup bookkeeping and wakeups now finish before user
   destructor code runs.
 
+- **Miri starts cleanly from inside the repository again.** The wasm32
+  `build-std` setting collided with Miri's own custom sysroot setup and built
+  `core` twice, ending in a thicket of duplicate-`rmeta` errors before crate
+  code ran. `scripts/miri` disables that one setting for Miri while leaving the
+  browser build untouched.
+
 ### Security
 
 - **Reader saturation now applies backpressure instead of panicking.** The

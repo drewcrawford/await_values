@@ -1,0 +1,9 @@
+#!/bin/bash
+set -e
+
+# Miri builds and supplies its own custom standard-library sysroot. The
+# repository-wide build-std setting exists for wasm32 atomics, but if Miri
+# inherits it during first-time setup Cargo builds `core` twice and reports
+# duplicate rmeta candidates. Disable only that setting for this invocation;
+# all target flags and the wasm32 wrappers remain unchanged.
+exec cargo +nightly --config 'unstable.build-std=[]' miri "$@"
