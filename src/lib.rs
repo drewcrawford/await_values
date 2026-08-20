@@ -939,8 +939,10 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     struct PanicWake;
 
+    #[cfg(not(target_arch = "wasm32"))]
     impl Wake for PanicWake {
         fn wake(self: Arc<Self>) {
             panic!("waker failed");

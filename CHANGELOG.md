@@ -87,6 +87,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of intentionally leaking their producer, so Miri's leak check stays
   useful too.
 
+- **Native-only unwind helpers stay out of wasm32 builds.** The panicking-waker
+  regressions cannot run on an abort-on-panic target; their helper now carries
+  the same target gate instead of tripping the wasm test build's `-D warnings`.
+
 ### Security
 
 - **Reader saturation now applies backpressure instead of panicking.** The
