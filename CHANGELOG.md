@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **The broken `From<Value<T>> for Observer<T>` conversion is now borrowed.**
+  Consuming the sole `Value` ran its destructor before `from` returned, so the
+  resulting observer was already hung up and never yielded the value it was
+  supposedly created from. Use `Observer::from(&value)` (or the existing
+  `value.observe()`) so the producer remains alive.
+
 ### Fixed
 
 - **Stream consumers now count as caught up in value diagnostics.** Polling an

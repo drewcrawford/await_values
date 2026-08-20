@@ -795,8 +795,26 @@ impl<T: Clone> From<T> for Value<T> {
     }
 }
 
-impl<T: Clone> From<Value<T>> for Observer<T> {
-    fn from(value: Value<T>) -> Self {
+impl<T: Clone> From<&Value<T>> for Observer<T> {
+    /// Creates an observer without consuming the `Value` that keeps it alive.
+    ///
+    /// The borrow is intentional. Consuming a `Value` here would immediately
+    /// run its `Drop` implementation and return an already-hung-up observer.
+    ///
+    /// ```
+    /// use await_values::{Observer, Value};
+    ///
+    /// let value = Value::new(42);
+    /// let mut observer = Observer::from(&value);
+    /// assert_eq!(observer.current_value(), Some(42));
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use await_values::{Observer, Value};
+    ///
+    /// let observer: Observer<_> = Value::new(42).into();
+    /// ```
+    fn from(value: &Value<T>) -> Self {
         value.observe()
     }
 }
@@ -1078,6 +1096,15 @@ mod tests {
         assert_eq!(observer.current_value().unwrap(), 42);
         value.set(100);
         assert_eq!(observer.current_value().unwrap(), 100);
+    }
+
+    #[wasm_lite_test]
+    fn test_observer_from_borrowed_value() {
+        let value = super::Value::new(42);
+        let mut observer = super::Observer::from(&value);
+        assert_eq!(observer.current_value(), Some(42));
+        value.set(100);
+        assert_eq!(observer.current_value(), Some(100));
     }
 
     #[wasm_lite_test]
