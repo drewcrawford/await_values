@@ -250,6 +250,38 @@ impl ActiveObservation {
     }
 }
 
+/// Wakes every active observation, without letting one broken executor strand
+/// the registrations that followed it.
+///
+/// `Waker::wake` is arbitrary user code and may unwind. Restore all stack
+/// entries before calling it, defer the first panic until every waker has had
+/// its turn, and suppress that panic if this runs from a destructor during an
+/// existing unwind (where a second panic would abort the process).
+fn notify_all(observations: impl IntoIterator<Item = Arc<ActiveObservation>>) {
+    let mut first_panic = None;
+    for active in observations {
+        if let Err(payload) =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| active.notify()))
+        {
+            if first_panic.is_none() {
+                first_panic = Some(payload);
+            } else {
+                // A panic payload may itself have a panicking destructor. The
+                // first panic is the one we preserve; leaking later payloads
+                // keeps their destructors out of an already exceptional path.
+                std::mem::forget(payload);
+            }
+        }
+    }
+    if let Some(payload) = first_panic {
+        if std::thread::panicking() {
+            std::mem::forget(payload);
+        } else {
+            std::panic::resume_unwind(payload);
+        }
+    }
+}
+
 impl Debug for ActiveObservation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "ActiveObservation(id: {})", self.id)
@@ -268,15 +300,17 @@ struct Shared<T> {
 
 impl<T> Shared<T> {
     fn notify(&self) {
+        let mut observations = Vec::new();
         for orig in self.active_observations.drain() {
             if let Some(active) = orig.upgrade() {
                 self.active_observations.push_arc(orig);
-                active.notify();
+                observations.push(active);
             } else {
                 // If the active observation has been dropped, we don't need to notify it
                 // and can safely ignore it.
             }
         }
+        notify_all(observations);
     }
 }
 
@@ -724,11 +758,15 @@ impl<T> Drop for Observer<T> {
                 }
             }
         }
-        // Push back any extra active observations that were popped
+        // Push back every extra active observation before waking any of them.
+        // A waker is user code and may panic; notify_all defers that panic until
+        // no registration remains temporarily absent from the stack.
+        let mut observations = Vec::with_capacity(extra.len());
         for (orig, active) in extra {
             self.shared.active_observations.push_arc(orig);
-            active.notify();
+            observations.push(active);
         }
+        notify_all(observations);
     }
 }
 
@@ -863,6 +901,18 @@ mod tests {
         }
     }
 
+    struct PanicWake;
+
+    impl Wake for PanicWake {
+        fn wake(self: Arc<Self>) {
+            panic!("waker failed");
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            panic!("waker failed");
+        }
+    }
+
     /// `set` owns its argument. Moving it into storage avoids a panicking
     /// destructor between the visible state change and observer notification.
     #[wasm_lite_test]
@@ -931,6 +981,93 @@ mod tests {
             wakes.0.load(Ordering::Relaxed),
             1,
             "the pending observer must be notified before payload destruction"
+        );
+    }
+
+    /// One executor's broken waker must not make healthy observers disappear
+    /// from the registration stack before they can be notified.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn panicking_waker_does_not_strand_other_observers() {
+        let value = super::Value::new(0);
+        let mut healthy = value.observe();
+        let mut panicking = value.observe();
+
+        let healthy_wakes = Arc::new(WakeCount::default());
+        let healthy_waker = Waker::from(Arc::clone(&healthy_wakes));
+        let mut healthy_cx = Context::from_waker(&healthy_waker);
+        assert!(matches!(
+            Stream::poll_next(std::pin::Pin::new(&mut healthy), &mut healthy_cx),
+            Poll::Ready(Some(0))
+        ));
+        assert!(matches!(
+            Stream::poll_next(std::pin::Pin::new(&mut healthy), &mut healthy_cx),
+            Poll::Pending
+        ));
+
+        // This observer was created last, so its registration is the first one
+        // drained from the LIFO stack.
+        let panic_waker = Waker::from(Arc::new(PanicWake));
+        let mut panic_cx = Context::from_waker(&panic_waker);
+        assert!(matches!(
+            Stream::poll_next(std::pin::Pin::new(&mut panicking), &mut panic_cx),
+            Poll::Ready(Some(0))
+        ));
+        assert!(matches!(
+            Stream::poll_next(std::pin::Pin::new(&mut panicking), &mut panic_cx),
+            Poll::Pending
+        ));
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| value.set(1)));
+        assert!(result.is_err(), "the waker panic should still propagate");
+        assert_eq!(
+            healthy_wakes.0.load(Ordering::Relaxed),
+            1,
+            "later registrations must still be restored and woken"
+        );
+    }
+
+    /// Observer cleanup also removes registrations temporarily while finding
+    /// its own entry, so it needs the same panic isolation as normal notify.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn panicking_waker_during_drop_does_not_strand_other_observers() {
+        let value = super::Value::new(0);
+        let target = value.observe();
+        let mut healthy = value.observe();
+        let mut panicking = value.observe();
+
+        let healthy_wakes = Arc::new(WakeCount::default());
+        let healthy_waker = Waker::from(Arc::clone(&healthy_wakes));
+        let mut healthy_cx = Context::from_waker(&healthy_waker);
+        assert!(matches!(
+            Stream::poll_next(std::pin::Pin::new(&mut healthy), &mut healthy_cx),
+            Poll::Ready(Some(0))
+        ));
+        assert!(matches!(
+            Stream::poll_next(std::pin::Pin::new(&mut healthy), &mut healthy_cx),
+            Poll::Pending
+        ));
+
+        let panic_waker = Waker::from(Arc::new(PanicWake));
+        let mut panic_cx = Context::from_waker(&panic_waker);
+        assert!(matches!(
+            Stream::poll_next(std::pin::Pin::new(&mut panicking), &mut panic_cx),
+            Poll::Ready(Some(0))
+        ));
+        assert!(matches!(
+            Stream::poll_next(std::pin::Pin::new(&mut panicking), &mut panic_cx),
+            Poll::Pending
+        ));
+
+        // Dropping the oldest observer pops both newer registrations while it
+        // searches the stack for its own entry.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(target)));
+        assert!(result.is_err(), "the waker panic should still propagate");
+        assert_eq!(
+            healthy_wakes.0.load(Ordering::Relaxed),
+            1,
+            "cleanup must restore and wake every displaced registration"
         );
     }
 

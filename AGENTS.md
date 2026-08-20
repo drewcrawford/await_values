@@ -84,11 +84,12 @@ These are spread across files and are easy to violate by accident:
 
 - **The wakeup protocol is three orderings that compose.** `poll_next` registers
   its waker *before* reading; `Value::set` notifies *after* flipping; and
-  `Shared::notify`/`Observer::drop` push an entry back onto the Treiber stack
-  *before* waking it. Drop any one and a notification can be lost: `notify`
-  drains the whole stack, so an entry is briefly absent, and only the
-  push-then-wake order guarantees the observer re-reads after the write that
-  missed it.
+  `Shared::notify`/`Observer::drop` restore every entry to the Treiber stack
+  *before* waking any of them. Drop any one and a notification can be lost:
+  `notify` drains the whole stack, so an entry is briefly absent, and only the
+  restore-then-wake order guarantees the observer re-reads after the write that
+  missed it. Waker panics are deferred until all entries are restored and all
+  wakers have had their turn.
 
 - **`FlipCard: Sync` requires `T: Send + Sync`**, not just `Send`. Readers clone
   from a *shared* slot, so many threads can be inside `T::clone` at once.

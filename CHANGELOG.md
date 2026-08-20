@@ -61,6 +61,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   concurrent, slow `Clone` calls a denial-of-service primitive. A saturated
   reader now waits for capacity exactly as it already waits for a writer.
 
+- **A panicking waker can no longer unregister innocent observers.** Wakeups
+  temporarily drain the registration stack. One executor's `Waker::wake`
+  panic used to abort that loop and permanently drop every registration after
+  it, silently denying future notifications to healthy consumers. All entries
+  are now restored first, every waker gets a turn, and then the original panic
+  resumes (unless another unwind is already in flight).
+
 ## [0.3.0] - 2026-08-17
 
 ### Breaking Changes
